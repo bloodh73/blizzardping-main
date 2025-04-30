@@ -29,15 +29,123 @@ class V2RayServer {
 
   factory V2RayServer.fromV2RayURL(String url) {
     try {
-      final v2rayURL = FlutterV2ray.parseFromURL(url);
-      return V2RayServer(
-        remark: v2rayURL.remark,
-        address: v2rayURL.address,
-        port: v2rayURL.port,
-        config: v2rayURL.getFullConfiguration(),
-      );
+      if (url.startsWith('vless://')) {
+        final uri = Uri.parse(url);
+        final userInfo = uri.userInfo.split(':')[0]; // UUID
+        final params = uri.queryParameters;
+        final type = params['type']?.toLowerCase() ?? '';
+
+        if (type == 'httpupgrade') {
+          // استخراج هاست واقعی
+          final hostParts = uri.host.split('.');
+          final realHost =
+              hostParts.length >= 3 ? hostParts.sublist(1).join('.') : uri.host;
+
+          // پردازش path با حذف کاراکترهای اضافی
+          String cleanPath = Uri.decodeComponent(params['path'] ?? '/');
+          cleanPath = cleanPath.replaceAll(
+            RegExp(r'\?.*$'),
+            '',
+          ); // حذف همه پارامترهای URL
+
+          // استخراج و پردازش هاست سفارشی
+          String host = params['host'] ?? '';
+          if (host.isNotEmpty) {
+            host = Uri.decodeComponent(host).toLowerCase();
+          }
+
+          print(
+            'Creating VLESS config with httpupgrade - Host: $realHost, Path: $cleanPath, Custom Host: $host',
+          );
+
+          final config = {
+            "log": {
+              "access": "",
+              "error": "",
+              "loglevel": "warning",
+              "dnsLog": false,
+            },
+            "inbounds": [
+              {
+                "tag": "socks-in",
+                "port": 10808,
+                "protocol": "socks",
+                "listen": "127.0.0.1",
+                "settings": {"auth": "noauth", "udp": true, "userLevel": 8},
+                "sniffing": {
+                  "enabled": true,
+                  "destOverride": ["http", "tls"],
+                },
+              },
+            ],
+            "outbounds": [
+              {
+                "tag": "proxy",
+                "protocol": "vless",
+                "settings": {
+                  "vnext": [
+                    {
+                      "address": realHost, // از متغیر realHost استفاده کنید
+                      "port": uri.port,
+                      "users": [
+                        {"id": userInfo, "encryption": "none", "level": 8},
+                      ],
+                    },
+                  ],
+                },
+                "streamSettings": {
+                  "network": "httpupgrade",
+                  "security": "none",
+                  "httpupgradeSettings": {
+                    "path": cleanPath,
+                    "host": host.isNotEmpty ? host : realHost,
+                  },
+                  "sockopt": {"tcpFastOpen": true, "tcpKeepAliveInterval": 30},
+                },
+                "mux": {"enabled": false, "concurrency": -1},
+              },
+              {
+                "tag": "direct",
+                "protocol": "freedom",
+                "settings": {"domainStrategy": "UseIP"},
+              },
+            ],
+            "routing": {
+              "domainStrategy": "IPIfNonMatch",
+              "rules": [
+                {
+                  "type": "field",
+                  "ip": ["geoip:private"],
+                  "outboundTag": "direct",
+                },
+                {
+                  "type": "field",
+                  "protocol": ["bittorrent"],
+                  "outboundTag": "direct",
+                },
+                {"type": "field", "network": "tcp,udp", "outboundTag": "proxy"},
+              ],
+            },
+            "dns": {
+              "servers": ["8.8.8.8", "8.8.4.4", "localhost"],
+            },
+          };
+
+          return V2RayServer(
+            remark:
+                uri.fragment.isNotEmpty
+                    ? Uri.decodeComponent(uri.fragment)
+                    : 'VLESS Server',
+            address: realHost,
+            port: uri.port,
+            config: json.encode(config),
+          );
+        }
+      }
+      throw Exception('Unsupported protocol or configuration');
     } catch (e) {
-      throw Exception('Failed to parse V2Ray URL: $e');
+      print('Error creating V2Ray config: $e');
+      throw Exception('Failed to create V2Ray configuration: $e');
     }
   }
 }
@@ -316,7 +424,6 @@ class _V2RayManagerState extends State<V2RayManager>
     if (!mounted) return;
     SnackBarUtils.showSnackBar(context, message: message, isError: true);
   }
-
 
   @override
   void initState() {
@@ -650,8 +757,13 @@ class _V2RayManagerState extends State<V2RayManager>
               ],
             },
             'streamSettings': {
-              'network': 'tcp',
+              'network': 'httpupgrade', // تغییر به httpupgrade
               'security': 'none',
+              'httpupgradeSettings': {
+                // اضافه کردن تنظیمات httpupgrade
+                'path': '/httpupgrade',
+                'host': serverConfig['address'],
+              },
               'sockopt': {
                 'tcpFastOpen': true,
                 'tproxy': 'redirect', // اضافه کردن تنظیمات tproxy
@@ -736,15 +848,15 @@ class _V2RayManagerState extends State<V2RayManager>
       if (!mounted) return;
 
       if (!hasPermission) {
-        _addLog('دسترسی VPN رد شد');
-        _showError('نیاز به دسترسی VPN');
+        _addLog('VPN permission denied');
+        _showError('VPN permission required');
         return;
       }
 
       if (_v2rayStatus.value.state == 'CONNECTED' ||
           _v2rayStatus.value.state == 'CONNECTING') {
         await _disconnect();
-        await Future.delayed(const Duration(seconds: 3)); // افزایش تاخیر
+        await Future.delayed(const Duration(seconds: 5)); // افزایش زمان انتظار
       }
 
       if (!mounted) return;
@@ -759,60 +871,43 @@ class _V2RayManagerState extends State<V2RayManager>
         downloadSpeed: 0,
       );
 
-      var configMap = json.decode(server.config);
-
-      // بهبود تنظیمات IPv6
-      if (_enableIPv6) {
-        configMap['outbounds'][0]['streamSettings']['sockopt'] = {
-          'tcpFastOpen': true,
-          'tproxy': 'redirect',
-          'domainStrategy': 'UseIPv4v6', // IPv4/IPv6 strategy
-          'dialerProxy': 'redirect',
-          'mark': 255,
-          'tcpKeepAliveInterval': 30, // Keep-alive interval
-        };
-
-        // DNS settings
-        configMap['dns'] = {
-          'servers': [
-            '8.8.8.8',
-            '2001:4860:4860::8888', // Google DNS IPv6
-            '1.1.1.1',
-            '2606:4700:4700::1111', // Cloudflare DNS IPv6
-          ],
-          'queryStrategy': 'UseIPv4v6',
-        };
-      }
+      print('Starting V2Ray with config: ${server.config}'); // اضافه کردن لاگ
 
       await _flutterV2ray.startV2Ray(
-        config: json.encode(configMap),
+        config: server.config,
         remark: server.remark,
         proxyOnly: _proxyOnly,
       );
 
       // افزایش زمان انتظار و تعداد تلاش‌ها
       int attempts = 0;
-      const maxAttempts = 30; // افزایش تعداد تلاش‌ها
+      const maxAttempts = 60; // افزایش تعداد تلاش‌ها
 
       while (attempts < maxAttempts) {
         await Future.delayed(const Duration(milliseconds: 500));
         attempts++;
 
         if (_v2rayStatus.value.state == 'CONNECTED') {
-          _addLog('اتصال به ${server.remark} برقرار شد');
+          _addLog('Connected to ${server.remark}');
           await _updatePing(server);
           _startPingUpdates();
           return;
         }
       }
 
-      throw Exception('اتصال پس از چند تلاش ناموفق بود');
+      throw Exception('Connection failed after multiple attempts');
     } catch (e) {
-      _addLog('خطای اتصال: $e');
+      _addLog('Connection error: $e');
       await _disconnect();
       throw Exception(
-        'خطا در اتصال: ${e.toString().replaceAll('Exception: ', '')}',
+        'Connection error: ${e.toString().replaceAll('Exception: ', '')}',
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPingLoading[server.remark] = false;
+        });
+      }
     }
   }
 
@@ -3051,33 +3146,48 @@ Future<int> _testServerDelay(
     final client = http.Client();
     final stopwatch = Stopwatch()..start();
 
-    // لیست آدرس‌های تست (هم IPv4 و هم IPv6)
+    // Add more reliable test URLs
     final testUrls = [
-      'http://www.gstatic.com/generate_204',
-      if (enableIPv6)
-        'http://[2404:6800:4008:c07::67]/generate_204', // آدرس IPv6 گوگل
+      'https://www.gstatic.com/generate_204',
+      'https://www.gstatic.com/generate_204',
+      'http://www.google.com/generate_204',
+      'http://connectivitycheck.gstatic.com/generate_204',
+      if (enableIPv6) 'http://[2404:6800:4008:c07::67]/generate_204',
     ];
 
+    // Try each URL with multiple attempts
     for (final url in testUrls) {
-      try {
-        final response = await client
-            .get(Uri.parse(url), headers: {'User-Agent': 'Mozilla/5.0'})
-            .timeout(timeout);
+      for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+          final response = await client
+              .get(
+                Uri.parse(url),
+                headers: {
+                  'User-Agent': 'Mozilla/5.0',
+                  'Accept': '*/*',
+                  'Connection': 'close',
+                },
+              )
+              .timeout(timeout);
 
-        if (response.statusCode == 204) {
-          stopwatch.stop();
-          return stopwatch.elapsedMilliseconds;
+          if (response.statusCode == 204 || response.statusCode == 200) {
+            stopwatch.stop();
+            client.close();
+            return stopwatch.elapsedMilliseconds;
+          }
+        } catch (e) {
+          print('HTTP request failed for $url (attempt ${attempt + 1}): $e');
+          await Future.delayed(const Duration(milliseconds: 500));
+          continue;
         }
-      } catch (e) {
-        print('HTTP request failed for $url: $e');
-        continue;
       }
     }
 
+    // If all attempts fail
     client.close();
     return 0;
   } catch (e) {
-    print('Error in _testServerDelay: $e');
+    print('Test server delay error: $e');
     return 0;
   }
 }
@@ -3151,10 +3261,11 @@ class UpdateChecker {
         '',
       );
       final downloadUrl = response.data['assets']?[0]?['browser_download_url'];
-      final changelog = response.data['body'] ?? ''; // Get changelog
+      final changelog = response.data['body'] ?? '';
       final isDark = Theme.of(context).brightness == Brightness.dark;
 
       if (_isNewVersionAvailable(currentVersion, latestVersion)) {
+        // نمایش دیالوگ آپدیت (کد قبلی)
         if (context.mounted) {
           showDialog(
             context: context,
@@ -3340,25 +3451,25 @@ class UpdateChecker {
             },
           );
         }
+      } else {
+        // اضافه کردن اسنک‌بار برای نمایش پیغام به‌روز بودن برنامه
+        if (context.mounted) {
+          SnackBarUtils.showSnackBar(
+            context,
+            message: 'You are using the latest version (v$currentVersion)',
+            isError: false,
+            duration: const Duration(seconds: 2),
+          );
+        }
       }
     } catch (e) {
       print('Error checking for updates: $e');
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.error_outline, color: Colors.white),
-                const SizedBox(width: 8),
-                Text('Failed to check for updates'),
-              ],
-            ),
-            backgroundColor: Colors.red[700],
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
+        SnackBarUtils.showSnackBar(
+          context,
+          message: 'Failed to check for updates',
+          isError: true,
+          duration: const Duration(seconds: 3),
         );
       }
     }
