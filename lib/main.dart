@@ -317,12 +317,6 @@ class _V2RayManagerState extends State<V2RayManager>
     SnackBarUtils.showSnackBar(context, message: message, isError: true);
   }
 
-  void _showSnackBar(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
 
   @override
   void initState() {
