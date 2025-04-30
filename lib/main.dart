@@ -2727,28 +2727,6 @@ class _V2RayManagerState extends State<V2RayManager>
     );
   }
 
-  Future<void> _addSubscriptionToManager(Subscription subscription) async {
-    final prefs = await SharedPreferences.getInstance();
-    final subscriptionsJson = prefs.getString('subscriptions') ?? '[]';
-    final List<dynamic> subscriptionsList = json.decode(subscriptionsJson);
-    final subscriptions =
-        subscriptionsList.map((item) => Subscription.fromJson(item)).toList();
-
-    // Check for duplicates
-    if (!subscriptions.any((s) => s.url == subscription.url)) {
-      subscriptions.add(subscription);
-      final updatedJson = json.encode(
-        subscriptions.map((sub) => sub.toJson()).toList(),
-      );
-      await prefs.setString('subscriptions', updatedJson);
-
-      // Update subscription URL if it's the first one
-      if (subscriptions.length == 1) {
-        await _saveSubscriptionUrl(subscription.url);
-      }
-    }
-  }
-
   Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('proxy_only', _proxyOnly);
@@ -3331,5 +3309,3 @@ class UpdateChecker {
     }
   }
 }
-
-
