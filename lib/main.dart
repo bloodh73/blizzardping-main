@@ -191,12 +191,14 @@ class _V2RayManagerState extends State<V2RayManager>
     with SingleTickerProviderStateMixin {
   String _subscriptionUrl = '';
   String _defaultSubscriptionUrl = '';
-  String _subscriptionName = ''; // Add this line
+  // Add this line
+  List<Subscription> _subscriptions = [];
 
   void initializeState() {
     // Renamed to 'initializeState'
     super.initState();
     _loadDefaultSubscription();
+    _loadSubscriptions();
 
     _loadSavedSubscriptionUrl();
     _loadSavedServers();
@@ -228,6 +230,32 @@ class _V2RayManagerState extends State<V2RayManager>
     });
   }
 
+  Future<void> _loadSubscriptions() async {
+    final prefs = await SharedPreferences.getInstance();
+    final subscriptionsJson = prefs.getString('subscriptions') ?? '[]';
+    print('Main: Loading subscriptions JSON: $subscriptionsJson'); // برای دیباگ
+
+    try {
+      final List<dynamic> subscriptionsList = json.decode(subscriptionsJson);
+      setState(() {
+        _subscriptions =
+            subscriptionsList
+                .map((item) => Subscription.fromJson(item))
+                .toList();
+      });
+
+      print(
+        'Main: Loaded ${_subscriptions.length} subscriptions',
+      ); // برای دیباگ
+      for (var sub in _subscriptions) {
+        print('Main: Subscription: ${sub.name} - ${sub.url}'); // برای دیباگ
+      }
+    } catch (e) {
+      print('Main: Error loading subscriptions: $e'); // برای دیباگ
+      _showError('Error loading subscriptions');
+    }
+  }
+
   List<V2RayServer> _servers = [];
   bool _isLoading = false;
   final ValueNotifier<V2RayStatus> _v2rayStatus = ValueNotifier(V2RayStatus());
@@ -250,16 +278,37 @@ class _V2RayManagerState extends State<V2RayManager>
         builder:
             (context) => SubscriptionManager(
               currentSubscriptionUrl: _subscriptionUrl,
-              onSubscriptionSelected: (url) {
-                _saveSubscriptionUrl(url);
+              onSubscriptionSelected: (url) async {
+                await _saveSubscriptionUrl(url);
+                await _fetchServers(url);
+              },
+              onSubscriptionsChanged: (
+                List<Subscription> newSubscriptions,
+              ) async {
+                setState(() {
+                  _subscriptions = newSubscriptions;
+                });
+                await _saveSubscriptions();
               },
             ),
       ),
     );
 
-    // بعد از برگشت از صفحه مدیریت سابسکریپشن‌ها، لیست را دوباره لود می‌کنیم
-    if (result != null) {
-      Future.microtask(() async {});
+    if (result == true) {
+      await _loadSubscriptions();
+      // اگر سابسکریپشن فعلی حذف شده، اولین سابسکریپشن را انتخاب کن
+      if (_subscriptions.every((sub) => sub.url != _subscriptionUrl)) {
+        if (_subscriptions.isNotEmpty) {
+          final firstSub = _subscriptions.first;
+          await _saveSubscriptionUrl(firstSub.url);
+          await _fetchServers(firstSub.url);
+        } else {
+          setState(() {
+            _subscriptionUrl = '';
+            _servers.clear();
+          });
+        }
+      }
     }
   }
 
@@ -303,7 +352,7 @@ class _V2RayManagerState extends State<V2RayManager>
       await Future.wait([
         _loadSavedServers(),
         _loadDefaultSubscription(),
-
+        _loadSubscriptions(),
         _loadSavedSubscriptionUrl(),
         _loadSettings(),
       ]);
@@ -315,6 +364,13 @@ class _V2RayManagerState extends State<V2RayManager>
           _currentServer = lastSelectedServer;
         });
         _addLog('سرور قبلی بازیابی شد: $lastSelectedServer');
+      }
+
+      // اگر subscription فعلی خالی است و subscriptionها وجود دارند
+      if (_subscriptionUrl.isEmpty && _subscriptions.isNotEmpty) {
+        final firstSub = _subscriptions.first;
+        await _saveSubscriptionUrl(firstSub.url);
+        await _fetchServers(firstSub.url);
       }
 
       _addLog('بارگذاری اطلاعات با موفقیت انجام شد');
@@ -365,10 +421,25 @@ class _V2RayManagerState extends State<V2RayManager>
     setState(() {
       _subscriptionUrl = url;
     });
-    await _fetchServers();
+
+    // پیدا کردن نام سابسکریپشن مربوطه
+    _subscriptions.firstWhere(
+      (sub) => sub.url == url,
+      orElse: () => Subscription(name: 'Unknown', url: url),
+    );
+
+    setState(() {});
   }
 
-  Future<void> _fetchServers() async {
+  Future<void> _saveSubscriptions() async {
+    final prefs = await SharedPreferences.getInstance();
+    final subscriptionsJson = json.encode(
+      _subscriptions.map((sub) => sub.toJson()).toList(),
+    );
+    await prefs.setString('subscriptions', subscriptionsJson);
+  }
+
+  Future<void> _fetchServers(String url) async {
     String urlToFetch = _subscriptionUrl;
 
     if (urlToFetch.isEmpty && _defaultSubscriptionUrl.isNotEmpty) {
@@ -833,7 +904,7 @@ class _V2RayManagerState extends State<V2RayManager>
       }
     });
     await _saveServers(_servers);
-    _showSnackBar('Server deleted successfully');
+    SnackBarUtils.showSnackBar(context, message: 'Server deleted successfully');
   }
 
   void _addLog(String log) {
@@ -1722,68 +1793,173 @@ class _V2RayManagerState extends State<V2RayManager>
           ),
         ),
       ),
-      body:
-          _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _servers.isEmpty
-              ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.cloud_off, size: 64, color: Colors.grey),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'No servers available',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    FreeSubscriptionButton(
-                      onSubscriptionReceived: (subscriptionUrl) {
-                        _saveSubscriptionUrl(subscriptionUrl);
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      icon: const Icon(Icons.playlist_add),
-                      label: const Text('Add Subscription'),
-                      onPressed: _openSubscriptionManager,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 12,
+      body: Column(
+        children: [
+          // Subscription List
+          Container(
+            height: 50,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child:
+                _subscriptions.isEmpty
+                    ? Center(
+                      child: Text(
+                        'No subscriptions added',
+                        style: TextStyle(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withOpacity(0.6),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              )
-              : RefreshIndicator(
-                onRefresh: refreshServers,
-                child: ListView.builder(
-                  padding: const EdgeInsets.only(bottom: 80),
-                  itemCount: _servers.length,
-                  itemBuilder: (context, index) {
-                    return ServerCard(
-                      server: _servers[index],
-                      currentServer: _currentServer,
-                      v2rayStatus: _v2rayStatus,
-                      pingResults: _pingResults,
-                      isPingLoading: _isPingLoading,
-                      isLoading: _isLoading,
-                      onSelect: (server) => _handleServerChange(server.remark),
-                      onDelete: () => _deleteServer(_servers[index]),
-                      onEdit:
-                          () =>
-                              _editServer(_servers[index]), // Add edit callback
-                      onConnect: _connect,
-                    );
-                  },
-                ),
-              ),
+                    )
+                    : ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      itemCount: _subscriptions.length,
+                      itemBuilder: (context, index) {
+                        final subscription = _subscriptions[index];
+                        final isSelected = subscription.url == _subscriptionUrl;
 
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 8,
+                          ),
+                          child: InkWell(
+                            onTap: () async {
+                              setState(() {
+                                _subscriptionUrl = subscription.url;
+                              });
+                              await _saveSubscriptionUrl(subscription.url);
+                              await _fetchServers(subscription.url);
+                            },
+                            borderRadius: BorderRadius.circular(20),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                              ),
+                              decoration: BoxDecoration(
+                                color:
+                                    isSelected
+                                        ? Theme.of(context).colorScheme.primary
+                                        : Theme.of(context).colorScheme.surface,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color:
+                                      isSelected
+                                          ? Theme.of(
+                                            context,
+                                          ).colorScheme.primary
+                                          : Theme.of(context)
+                                              .colorScheme
+                                              .outline
+                                              .withOpacity(0.5),
+                                ),
+                              ),
+                              alignment: Alignment.center,
+                              child: Text(
+                                subscription.name,
+                                style: TextStyle(
+                                  color:
+                                      isSelected
+                                          ? Theme.of(
+                                            context,
+                                          ).colorScheme.onPrimary
+                                          : Theme.of(
+                                            context,
+                                          ).colorScheme.onSurface,
+                                  fontWeight:
+                                      isSelected
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+          ),
+          // Existing content
+          Expanded(
+            child:
+                _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _servers.isEmpty
+                    ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.cloud_off,
+                            size: 64,
+                            color: Colors.grey,
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'No servers available',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          FreeSubscriptionButton(
+                            onSubscriptionReceived: (subscriptionUrl) {
+                              _saveSubscriptionUrl(subscriptionUrl);
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.playlist_add),
+                            label: const Text('Add Subscription'),
+                            onPressed: _openSubscriptionManager,
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 24,
+                                vertical: 12,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                    : RefreshIndicator(
+                      onRefresh: refreshServers,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.only(bottom: 80),
+                        itemCount: _servers.length,
+                        itemBuilder: (context, index) {
+                          return ServerCard(
+                            server: _servers[index],
+                            currentServer: _currentServer,
+                            v2rayStatus: _v2rayStatus,
+                            pingResults: _pingResults,
+                            isPingLoading: _isPingLoading,
+                            isLoading: _isLoading,
+                            onSelect:
+                                (server) => _handleServerChange(server.remark),
+                            onDelete: () => _deleteServer(_servers[index]),
+                            onEdit:
+                                () => _editServer(
+                                  _servers[index],
+                                ), // Add edit callback
+                            onConnect: _connect,
+                          );
+                        },
+                      ),
+                    ),
+          ),
+        ],
+      ),
       floatingActionButton:
           _currentServer.isEmpty
               ? null // Don't show FAB when no server is selected
@@ -2537,7 +2713,7 @@ class _V2RayManagerState extends State<V2RayManager>
 
       await _saveServers(_servers);
       Navigator.pop(context);
-      
+
       SnackBarUtils.showSnackBar(
         context,
         message: 'Server configuration saved successfully',
@@ -2581,53 +2757,23 @@ class _V2RayManagerState extends State<V2RayManager>
 
           // Check if it's a subscription URL (typically starts with http:// or https://)
           if (text.startsWith('http://') || text.startsWith('https://')) {
-            showDialog(
-              context: context,
-              builder:
-                  (context) => AlertDialog(
-                    title: const Text('افزودن سابسکریپشن'),
-                    content: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        TextField(
-                          controller: TextEditingController(
-                            text:
-                                'Subscription ${DateTime.now().millisecondsSinceEpoch}',
-                          ),
-                          decoration: const InputDecoration(
-                            labelText: 'نام سابسکریپشن',
-                          ),
-                          onChanged: (value) => _subscriptionName = value,
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'آیا می‌خواهید این لینک را به عنوان سابسکریپشن اضافه کنید؟',
-                        ),
-                      ],
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('No'),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          Navigator.pop(context);
-                          await _addSubscriptionToManager(
-                            Subscription(
-                              name:
-                                  _subscriptionName.isNotEmpty
-                                      ? _subscriptionName
-                                      : 'Subscription ${DateTime.now().millisecondsSinceEpoch}',
-                              url: text,
-                            ),
-                          );
-                          _showSnackBar('سابسکریپشن با موفقیت اضافه شد');
-                        },
-                        child: const Text('Yes'),
-                      ),
-                    ],
-                  ),
+            final subscription = Subscription(
+              name: '${_subscriptions.length + 1}',
+              url: text,
+            );
+
+            setState(() {
+              _subscriptions.add(subscription);
+            });
+            await _saveSubscriptions();
+
+            // سابسکریپشن جدید را فعال می‌کنیم
+            await _saveSubscriptionUrl(text);
+            await _fetchServers(text);
+
+            SnackBarUtils.showSnackBar(
+              context,
+              message: 'Subscription added successfully',
             );
             return;
           }
@@ -2688,7 +2834,10 @@ class _V2RayManagerState extends State<V2RayManager>
                               _servers.add(newServer);
                             });
                             _saveServers(_servers);
-                            _showSnackBar('کانفیگ با موفقیت اضافه شد');
+                            SnackBarUtils.showSnackBar(
+                              context,
+                              message: 'کانفیگ با موفقیت اضافه شد',
+                            );
                           },
                           child: const Text('Yes'),
                         ),
@@ -2711,16 +2860,26 @@ class _V2RayManagerState extends State<V2RayManager>
                 _servers.add(server);
               });
               await _saveServers(_servers);
-              _showSnackBar('سرور با موفقیت اضافه شد');
+              SnackBarUtils.showSnackBar(
+                context,
+                message: 'سرور با موفقیت اضافه شد',
+              );
               return;
             } catch (e) {
-              _showError('لینک V2Ray نامعتبر است');
+              SnackBarUtils.showSnackBar(
+                context,
+                message: 'لینک V2Ray نامعتبر است',
+                isError: true,
+              );
               return;
             }
           }
 
-          _showError(
-            'فرمت کانفیگ یا لینک نامعتبر است\nلطفا از صحت کانفیگ اطمینان حاصل کنید',
+          SnackBarUtils.showSnackBar(
+            context,
+            message:
+                'فرمت کانفیگ یا لینک نامعتبر است\nلطفا از صحت کانفیگ اطمینان حاصل کنید',
+            isError: true,
           );
         },
       ),

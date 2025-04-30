@@ -324,14 +324,20 @@ class _ServerStats extends StatelessWidget {
 }
 
 class SubscriptionManager extends StatefulWidget {
-  final Function(String) onSubscriptionSelected;
   final String currentSubscriptionUrl;
+  final Function(String) onSubscriptionSelected;
+  final Function(List<Subscription>)? onSubscriptionsChanged;
+  final Subscription? newSubscription;
+  final bool autoAdd; // اضافه کردن پارامتر جدید
 
   const SubscriptionManager({
-    super.key,
-    required this.onSubscriptionSelected,
+    Key? key,
     required this.currentSubscriptionUrl,
-  });
+    required this.onSubscriptionSelected,
+    this.onSubscriptionsChanged,
+    this.newSubscription,
+    this.autoAdd = false, // مقدار پیش‌فرض false
+  }) : super(key: key);
 
   @override
   State<SubscriptionManager> createState() => _SubscriptionManagerState();
@@ -346,21 +352,96 @@ class _SubscriptionManagerState extends State<SubscriptionManager> {
   void initState() {
     super.initState();
     _loadSubscriptions();
+    
+    // اگر سابسکریپشن جدید وجود داشت و autoAdd فعال بود
+    if (widget.newSubscription != null && widget.autoAdd) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _saveSubscription(
+          widget.newSubscription!.name,
+          widget.newSubscription!.url,
+        );
+      });
+    }
+  }
+
+  Future<void> _loadSubscriptions() async {
+    final prefs = await SharedPreferences.getInstance();
+    final subscriptionsJson = prefs.getString('subscriptions') ?? '[]';
+    print('Loaded JSON: $subscriptionsJson'); // برای دیباگ
+    
+    try {
+      final List<dynamic> subscriptionsList = json.decode(subscriptionsJson);
+      setState(() {
+        _subscriptions = subscriptionsList
+            .map((item) => Subscription.fromJson(item))
+            .toList();
+      });
+      
+      print('Loaded ${_subscriptions.length} subscriptions'); // برای دیباگ
+      for (var sub in _subscriptions) {
+        print('Subscription: ${sub.name} - ${sub.url}'); // برای دیباگ
+      }
+    } catch (e) {
+      print('Error loading subscriptions: $e'); // برای دیباگ
+    }
+  }
+
+  Future<void> _saveSubscription(String name, String url) async {
+    if (name.isEmpty || url.isEmpty) return;
+
+    // چک کردن تکراری نبودن URL
+    if (_subscriptions.any((sub) => sub.url == url)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This subscription URL already exists'),
+        ),
+      );
+      return;
+    }
+
+    final newSubscription = Subscription(name: name, url: url);
+    
+    setState(() {
+      _subscriptions.add(newSubscription);
+    });
+
+    await _saveSubscriptions();
+    widget.onSubscriptionSelected(url);
+    widget.onSubscriptionsChanged?.call(_subscriptions);
+  }
+
+  Future<void> _deleteSubscription(int index) async {
+    setState(() {
+      _subscriptions.removeAt(index);
+    });
+
+    await _saveSubscriptions();
+    widget.onSubscriptionsChanged?.call(_subscriptions);
+  }
+
+  Future<void> _saveSubscriptions() async {
+    final prefs = await SharedPreferences.getInstance();
+    final subscriptionsJson = json.encode(
+      _subscriptions.map((sub) => sub.toJson()).toList()
+    );
+    await prefs.setString('subscriptions', subscriptionsJson);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Manage Subscriptions',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        elevation: 0,
+        title: const Text('Subscription Manager'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: () => _showAddDialog(context),
+          ),
+        ],
       ),
       body: Column(
         children: [
-          // Search and Info Card
+          // Info Card
           Padding(
             padding: const EdgeInsets.all(16),
             child: Container(
@@ -401,182 +482,93 @@ class _SubscriptionManagerState extends State<SubscriptionManager> {
 
           // Subscriptions List
           Expanded(
-            child:
-                _subscriptions.isEmpty
-                    ? _buildEmptyState()
-                    : ListView.builder(
-                      itemCount: _subscriptions.length,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemBuilder: (context, index) {
-                        final subscription = _subscriptions[index];
-                        final isSelected =
-                            subscription.url == widget.currentSubscriptionUrl;
-
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.surface,
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(
-                              color:
-                                  isSelected
-                                      ? Theme.of(context).colorScheme.primary
-                                      : Theme.of(
-                                        context,
-                                      ).colorScheme.outline.withOpacity(0.2),
-                              width: isSelected ? 2 : 1,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Theme.of(
-                                  context,
-                                ).shadowColor.withOpacity(0.05),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
+            child: _subscriptions.isEmpty
+                ? _buildEmptyState()
+                : ListView.builder(
+                    itemCount: _subscriptions.length,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemBuilder: (context, index) {
+                      final subscription = _subscriptions[index];
+                      final isSelected = subscription.url == widget.currentSubscriptionUrl;
+                      
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: Icon(
+                            Icons.rss_feed,
+                            color: isSelected
+                                ? Theme.of(context).colorScheme.primary
+                                : null,
                           ),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
-                            leading: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color:
-                                    isSelected
-                                        ? Theme.of(
-                                          context,
-                                        ).colorScheme.primaryContainer
-                                        : Theme.of(
-                                          context,
-                                        ).colorScheme.surfaceVariant,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Icon(
-                                Icons.rss_feed,
-                                color:
-                                    isSelected
-                                        ? Theme.of(context).colorScheme.primary
-                                        : Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant,
-                                size: 24,
-                              ),
-                            ),
-                            title: Text(
-                              subscription.name,
-                              style: TextStyle(
-                                fontWeight:
-                                    isSelected
-                                        ? FontWeight.bold
-                                        : FontWeight.w500,
-                                color:
-                                    isSelected
-                                        ? Theme.of(context).colorScheme.primary
-                                        : Theme.of(
-                                          context,
-                                        ).colorScheme.onSurface,
-                              ),
-                            ),
-                            subtitle: Text(
-                              subscription.url,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color:
-                                    isSelected
-                                        ? Theme.of(
-                                          context,
-                                        ).colorScheme.primary.withOpacity(0.8)
-                                        : Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant,
-                              ),
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (isSelected)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
-                                    margin: const EdgeInsets.only(right: 8),
-                                    decoration: BoxDecoration(
-                                      color:
-                                          Theme.of(
-                                            context,
-                                          ).colorScheme.primaryContainer,
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          Icons.check_circle,
-                                          color:
-                                              Theme.of(
-                                                context,
-                                              ).colorScheme.primary,
-                                          size: 16,
-                                        ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          'Active',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w500,
-                                            color:
-                                                Theme.of(
-                                                  context,
-                                                ).colorScheme.primary,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.edit,
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
-                                    size: 20,
-                                  ),
-                                  onPressed:
-                                      () => _editSubscription(
-                                        subscription,
-                                        index,
-                                      ),
-                                ),
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.delete,
-                                    color: Theme.of(context).colorScheme.error,
-                                    size: 20,
-                                  ),
-                                  onPressed: () => _showDeleteDialog(index),
-                                ),
-                              ],
-                            ),
-                            onTap: () {
-                              widget.onSubscriptionSelected(subscription.url);
-                              Navigator.pop(context);
-                            },
+                          title: Text(subscription.name),
+                          subtitle: Text(
+                            subscription.url,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                        );
-                      },
-                    ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () => _deleteSubscription(index),
+                          ),
+                          selected: isSelected,
+                          onTap: () {
+                            widget.onSubscriptionSelected(subscription.url);
+                            Navigator.pop(context, true);
+                          },
+                        ),
+                      );
+                    },
+                  ),
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addSubscription,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Subscription'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Theme.of(context).colorScheme.onPrimary,
+    );
+  }
+
+  Future<void> _showAddDialog(BuildContext context) async {
+    _nameController.clear();
+    _urlController.clear();
+
+    return showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add Subscription'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                hintText: 'Enter subscription name',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _urlController,
+              decoration: const InputDecoration(
+                labelText: 'URL',
+                hintText: 'Enter subscription URL',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              _saveSubscription(
+                _nameController.text.trim(),
+                _urlController.text.trim(),
+              );
+              Navigator.pop(context);
+            },
+            child: const Text('Add'),
+          ),
+        ],
       ),
     );
   }
@@ -609,254 +601,13 @@ class _SubscriptionManagerState extends State<SubscriptionManager> {
           ),
           const SizedBox(height: 24),
           ElevatedButton.icon(
-            onPressed: _addSubscription,
+            onPressed: () => _showAddDialog(context),
             icon: const Icon(Icons.add),
             label: const Text('Add Subscription'),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
           ),
         ],
       ),
     );
-  }
-
-  void _showDeleteDialog(int index) {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            title: Row(
-              children: [
-                Icon(Icons.warning, color: Theme.of(context).colorScheme.error),
-                const SizedBox(width: 8),
-                const Text('Delete Subscription'),
-              ],
-            ),
-            content: const Text(
-              'Are you sure you want to delete this subscription?',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text(
-                  'Cancel',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.secondary,
-                  ),
-                ),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  setState(() {
-                    _subscriptions.removeAt(index);
-                  });
-                  await _saveSubscriptions();
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.error,
-                  foregroundColor: Theme.of(context).colorScheme.onError,
-                ),
-                child: const Text('Delete'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  void _editSubscription(Subscription subscription, int index) {
-    _nameController.text = subscription.name;
-    _urlController.text = subscription.url;
-
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            title: Row(
-              children: [
-                Icon(Icons.edit, color: Theme.of(context).colorScheme.primary),
-                const SizedBox(width: 8),
-                const Text('Edit Subscription'),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: _nameController,
-                  decoration: InputDecoration(
-                    labelText: 'Name',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _urlController,
-                  decoration: InputDecoration(
-                    labelText: 'URL',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  _nameController.clear();
-                  _urlController.clear();
-                  Navigator.pop(context);
-                },
-                child: Text(
-                  'Cancel',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.secondary,
-                  ),
-                ),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  if (_nameController.text.isNotEmpty &&
-                      _urlController.text.isNotEmpty) {
-                    setState(() {
-                      _subscriptions[index] = Subscription(
-                        name: _nameController.text,
-                        url: _urlController.text,
-                      );
-                    });
-                    await _saveSubscriptions();
-
-                    if (widget.currentSubscriptionUrl == subscription.url) {
-                      widget.onSubscriptionSelected(_urlController.text);
-                    }
-
-                    _nameController.clear();
-                    _urlController.clear();
-                    Navigator.pop(context);
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                ),
-                child: const Text('Save'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  void _addSubscription() {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            title: Row(
-              children: [
-                Icon(Icons.add, color: Theme.of(context).colorScheme.primary),
-                const SizedBox(width: 8),
-                const Text('Add Subscription'),
-              ],
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: _nameController,
-                  decoration: InputDecoration(
-                    labelText: 'Name',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _urlController,
-                  decoration: InputDecoration(
-                    labelText: 'URL',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  _nameController.clear();
-                  _urlController.clear();
-                  Navigator.pop(context);
-                },
-                child: Text(
-                  'Cancel',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.secondary,
-                  ),
-                ),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  if (_nameController.text.isNotEmpty &&
-                      _urlController.text.isNotEmpty) {
-                    setState(() {
-                      _subscriptions.add(
-                        Subscription(
-                          name: _nameController.text,
-                          url: _urlController.text,
-                        ),
-                      );
-                    });
-                    await _saveSubscriptions();
-                    _nameController.clear();
-                    _urlController.clear();
-                    Navigator.pop(context);
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                ),
-                child: const Text('Add'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _loadSubscriptions() async {
-    final prefs = await SharedPreferences.getInstance();
-    final subscriptionsJson = prefs.getString('subscriptions') ?? '[]';
-    final List<dynamic> subscriptionsList = json.decode(subscriptionsJson);
-    setState(() {
-      _subscriptions =
-          subscriptionsList.map((item) => Subscription.fromJson(item)).toList();
-    });
-  }
-
-  Future<void> _saveSubscriptions() async {
-    final prefs = await SharedPreferences.getInstance();
-    final subscriptionsJson = json.encode(
-      _subscriptions.map((sub) => sub.toJson()).toList(),
-    );
-    await prefs.setString('subscriptions', subscriptionsJson);
   }
 }
 
@@ -1072,3 +823,11 @@ class _ServerCardContent extends StatelessWidget {
         : Colors.black.withOpacity(0.03);
   }
 }
+
+
+
+
+
+
+
+
