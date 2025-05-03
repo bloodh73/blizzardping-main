@@ -3127,6 +3127,43 @@ class _V2RayManagerState extends State<V2RayManager>
           ),
     );
   }
+
+  // تابع برای بررسی دوره‌ای وضعیت اتصال
+  void _startConnectionStatusCheck() {
+    _addLog('Starting periodic connection status check');
+    _connectionStatusTimer?.cancel();
+    _pingTimer?.cancel();
+    _connectionStatusTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (timer) async {
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        
+        await _checkV2RayStatus();
+      },
+    );
+  }
+  Future<void> _checkV2RayStatus() async {  
+    
+    // بررسی وضعیت اتصال در شروع برنامه
+    _checkV2RayStatus().then((_) {
+      _startConnectionStatusCheck();
+    });
+    
+    // بررسی آپدیت
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdateChecker.checkForUpdate(context);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pingTimer?.cancel();
+    _connectionStatusTimer?.cancel();
+    super.dispose();
+  }
 }
 
 extension on V2RayStatus {}
@@ -3265,7 +3302,6 @@ class UpdateChecker {
       final isDark = Theme.of(context).brightness == Brightness.dark;
 
       if (_isNewVersionAvailable(currentVersion, latestVersion)) {
-        // نمایش دیالوگ آپدیت (کد قبلی)
         if (context.mounted) {
           showDialog(
             context: context,
@@ -3451,16 +3487,6 @@ class UpdateChecker {
             },
           );
         }
-      } else {
-        // اضافه کردن اسنک‌بار برای نمایش پیغام به‌روز بودن برنامه
-        if (context.mounted) {
-          SnackBarUtils.showSnackBar(
-            context,
-            message: 'You are using the latest version (v$currentVersion)',
-            isError: false,
-            duration: const Duration(seconds: 2),
-          );
-        }
       }
     } catch (e) {
       print('Error checking for updates: $e');
@@ -3568,7 +3594,6 @@ class UpdateChecker {
       }
     } catch (e) {
       print('Error launching URL: $e');
-      // اینجا می‌توانید یک اسنک‌بار نمایش دهید که نشان دهد باز کردن لینک با مشکل مواجه شده
       throw Exception('Could not launch $url: $e');
     }
   }
