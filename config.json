@@ -5,6 +5,22 @@
         "enabled": true,
         "concurrency": 8
       },
+      "protocol": "vmess",
+      "settings": {
+        "vnext": [
+          {
+            "address": "your-server-address",
+            "port": 443,
+            "users": [
+              {
+                "id": "your-uuid",
+                "alterId": 0,
+                "security": "auto"
+              }
+            ]
+          }
+        ]
+      },
       "streamSettings": {
         "network": "tcp",
         "security": "tls",
@@ -12,17 +28,25 @@
           "header": {
             "type": "none"
           }
-        },
-        "kcpSettings": {
-          "mtu": 1350,
-          "tti": 50,
-          "uplinkCapacity": 12,
-          "downlinkCapacity": 100,
-          "congestion": false,
-          "readBufferSize": 2,
-          "writeBufferSize": 2
         }
-      }
+      },
+      "tag": "proxy"
     }
-  ]
+  ],
+  "dns": {
+    "servers": [
+      "8.8.8.8",
+      "1.1.1.1",
+      "2001:4860:4860::8888",
+      "2606:4700:4700::1111"
+    ],
+    "queryStrategy": "UseIPv4v6"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}
+    ]
+  }
 }
+

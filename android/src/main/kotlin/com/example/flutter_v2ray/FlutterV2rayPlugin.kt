@@ -19,3 +19,23 @@ private fun startV2Ray(call: MethodCall, result: Result) {
         result.error("V2RAY_START_ERROR", e.message, null)
     }
 }
+
+private fun getV2RayStatus(result: Result) {
+    try {
+        val status = v2rayService?.getV2RayStatus() ?: mapOf(
+            "state" to "DISCONNECTED",
+            "uploadSpeed" to 0,
+            "downloadSpeed" to 0
+        )
+        result.success(status)
+    } catch (e: Exception) {
+        result.error("GET_STATUS_ERROR", e.message, null)
+    }
+}
+
+// در متد onMethodCall اضافه کنید:
+"getV2RayStatus" -> getV2RayStatus(result)
+
+
+
+

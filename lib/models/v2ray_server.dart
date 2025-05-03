@@ -15,10 +15,10 @@ class V2RayServer {
 
   factory V2RayServer.fromJson(Map<String, dynamic> json) {
     return V2RayServer(
-      remark: json['remark'] as String,
-      address: json['address'] as String,
-      port: json['port'] as int,
-      config: json['config'] as String,
+      remark: json['remark'] as String? ?? 'Unknown',
+      address: json['address'] as String? ?? '',
+      port: json['port'] != null ? int.parse(json['port'].toString()) : 0,
+      config: json['config'] as String? ?? '',
     );
   }
 
@@ -49,3 +49,4 @@ class V2RayServer {
     };
   }
 }
+
