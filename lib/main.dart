@@ -1,10 +1,11 @@
 import 'dart:async';
+import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as Math;
 import 'package:blizzardping/class/class.dart';
 import 'package:blizzardping/utils/snackbar_utils.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_v2ray/flutter_v2ray.dart';
 import 'package:http/http.dart' as http;
@@ -237,9 +238,11 @@ class _V2RayManagerState extends State<V2RayManager>
   Future<List<V2RayServer>> _loadAllServers() async {
     final prefs = await SharedPreferences.getInstance();
     final List<V2RayServer> allServers = [];
+    _addLog('Loading servers from all subscriptions...');
 
     // Load servers from all subscriptions
     for (var subscription in _subscriptions) {
+      _addLog('Loading servers from subscription: ${subscription.name}');
       final key = 'servers_for_subscription_${subscription.url.hashCode}';
       final serversJson = prefs.getString(key) ?? '[]';
 
@@ -260,6 +263,9 @@ class _V2RayManagerState extends State<V2RayManager>
                 )
                 .toList();
 
+        _addLog(
+          'Found ${servers.length} servers in subscription ${subscription.name}',
+        );
         allServers.addAll(servers);
       } catch (e) {
         _addLog(
@@ -269,9 +275,22 @@ class _V2RayManagerState extends State<V2RayManager>
     }
 
     // Also add saved servers
+    _addLog('Adding ${_savedServers.length} manually saved servers');
     allServers.addAll(_savedServers);
 
-    return allServers;
+    // Remove duplicates based on remark
+    final uniqueServers = <V2RayServer>[];
+    final seenRemarks = <String>{};
+
+    for (var server in allServers) {
+      if (!seenRemarks.contains(server.remark)) {
+        uniqueServers.add(server);
+        seenRemarks.add(server.remark);
+      }
+    }
+
+    _addLog('Total unique servers loaded: ${uniqueServers.length}');
+    return uniqueServers;
   }
 
   Future<void> _loadSubscriptions() async {
@@ -308,15 +327,16 @@ class _V2RayManagerState extends State<V2RayManager>
   bool _proxyOnly = false;
   bool _enableIPv6 = false;
   bool _enableMux = false;
-  bool _enableIPv6Ping = false;
-  bool _enableHttpUpgrade = false;
+
   final Map<String, int> _pingResults = {};
   final Map<String, bool> _isPingLoading = {};
   final List<String> _logs = []; // متغیر جدید برای لاگ‌ها
   List<V2RayServer> _savedServers = [];
   Timer? _pingTimer;
-  // متغیر جدید برای حالت تم
-  final Map<String, int> _lastPingAttempt = {}; // Track last ping attempt time
+
+  final Map<String, int> _lastPingAttempt = {};
+
+  get onSelect => null; // Track last ping attempt time
 
   void _openSubscriptionManager() async {
     final result = await Navigator.push(
@@ -564,6 +584,7 @@ class _V2RayManagerState extends State<V2RayManager>
 
     if (url.isEmpty) {
       // اگر URL خالی باشد (یعنی "All" انتخاب شده)، تمام سرورها را نمایش می‌دهیم
+      _addLog('Loading all servers from all subscriptions');
       final allServers = await _loadAllServers();
       setState(() {
         _servers = allServers;
@@ -694,7 +715,7 @@ class _V2RayManagerState extends State<V2RayManager>
 
         try {
           if (isShadowsocksURL(line)) {
-            final server = _parseShadowsocksURL(line);
+            final server = _parseShadowsocksURL(line, 'Unnamed Server');
             if (server != null) {
               print(
                 'Successfully parsed SS server: ${server.remark}',
@@ -721,7 +742,7 @@ class _V2RayManagerState extends State<V2RayManager>
     }
   }
 
-  V2RayServer? _parseShadowsocksURL(String url) {
+  V2RayServer? _parseShadowsocksURL(String url, String remark) {
     try {
       if (!url.startsWith('ss://')) {
         return null;
@@ -934,7 +955,7 @@ class _V2RayManagerState extends State<V2RayManager>
     }
   }
 
-  // تابع برای شروع پینگ
+  // تابع برای شروع پینگ دوره‌ای
 
   // تابع برای بروزرسانی پینگ
 
@@ -948,23 +969,37 @@ class _V2RayManagerState extends State<V2RayManager>
     try {
       _addLog('Testing delay for $address:$port');
 
-      // فقط از Socket برای تست اتصال استفاده می‌کنیم
       final stopwatch = Stopwatch()..start();
 
-      try {
-        final socket = await Socket.connect(address, port, timeout: timeout);
+      // Try multiple connection attempts for better reliability
+      for (int attempt = 1; attempt <= 3; attempt++) {
+        try {
+          final socket = await Socket.connect(
+            address,
+            port,
+            timeout: timeout,
+          ).catchError((error) {
+            _addLog('Socket connection error (attempt $attempt): $error');
+            // ignore: invalid_return_type_for_catch_error
+            return null;
+          });
 
-        final delay = stopwatch.elapsedMilliseconds;
-        await socket.close();
+          final delay = stopwatch.elapsedMilliseconds;
+          await socket.close();
 
-        _addLog('Socket connection delay: $delay ms');
-        print('Socket connection delay for $address: $delay ms'); // Debug print
+          _addLog('Socket connection successful, delay: $delay ms');
+          return delay > 0 ? delay : 1;
+        } catch (socketError) {
+          _addLog('Socket connection error (attempt $attempt): $socketError');
+        }
 
-        return delay;
-      } catch (socketError) {
-        _addLog('Socket connection error: $socketError');
-        return 0;
+        // Wait a bit before retrying
+        if (attempt < 3) {
+          await Future.delayed(const Duration(milliseconds: 30));
+        }
       }
+
+      return 0;
     } catch (e) {
       _addLog('Server delay test failed: $e');
       return 0;
@@ -975,10 +1010,6 @@ class _V2RayManagerState extends State<V2RayManager>
     if (!mounted) return;
 
     try {
-      setState(() {
-        _isLoading = true;
-      });
-
       _addLog('Connecting to ${server.remark}...');
 
       final hasPermission = await _flutterV2ray.requestPermission();
@@ -987,16 +1018,13 @@ class _V2RayManagerState extends State<V2RayManager>
       if (!hasPermission) {
         _addLog('VPN permission denied');
         _showError('VPN permission required');
-        setState(() {
-          _isLoading = false;
-        });
         return;
       }
 
       if (_v2rayStatus.value.state == 'CONNECTED' ||
           _v2rayStatus.value.state == 'CONNECTING') {
         await _disconnect();
-        await Future.delayed(const Duration(seconds: 3));
+        await Future.delayed(const Duration(seconds: 1));
       }
 
       if (!mounted) return;
@@ -1011,146 +1039,116 @@ class _V2RayManagerState extends State<V2RayManager>
         downloadSpeed: 0,
       );
 
+      // حذف پینگ اتوماتیک قبل از اتصال
+      // try {
+      //   await _updatePing(server);
+      // } catch (e) {
+      //   _addLog('Pre-connection ping failed: $e');
+      // }
+
+      // حذف شروع بروزرسانی دوره‌ای پینگ
+      // _startPingUpdates();
+
       // Parse the config and modify it if needed
-      Map<String, dynamic> configMap;
+      Map<String, dynamic> configMap = {};
       try {
-        configMap = json.decode(server.config);
+        // اگر کانفیگ یک URL است، آن را پارس کنیم
+        if (server.config.startsWith('vless://')) {
+          _addLog(
+            'Parsing VLESS URL: ${server.config.substring(0, Math.min(30, server.config.length))}...',
+          );
+          configMap = _parseVLESSURL(server.config);
+        } else if (server.config.startsWith('vmess://')) {
+          _addLog(
+            'Parsing VMess URL: ${server.config.substring(0, Math.min(30, server.config.length))}...',
+          );
+          configMap = _parseVMESSURL(server.config);
+        } else if (server.config.startsWith('ss://')) {
+          _addLog(
+            'Parsing Shadowsocks URL: ${server.config.substring(0, Math.min(30, server.config.length))}...',
+          );
+          // کد پارس Shadowsocks
+        } else {
+          // اگر کانفیگ JSON است
+          configMap = json.decode(server.config);
+        }
+
+        // اطمینان از وجود بخش stats برای گزارش آمار
+        configMap['stats'] = configMap['stats'] ?? {};
+
+        // اضافه کردن بخش policy اگر وجود ندارد
+        if (configMap['policy'] == null) {
+          configMap['policy'] = {
+            "levels": {
+              "0": {"statsUserUplink": true, "statsUserDownlink": true},
+            },
+            "system": {
+              "statsInboundUplink": true,
+              "statsInboundDownlink": true,
+              "statsOutboundUplink": true,
+              "statsOutboundDownlink": true,
+            },
+          };
+        }
+
+        // تنظیم پارامترهای اضافی
+        final jsonConfig = json.encode(configMap);
+        _addLog(
+          'Starting V2Ray with config: ${jsonConfig.substring(0, Math.min(100, jsonConfig.length))}...',
+        );
+
+        await _flutterV2ray.startV2Ray(
+          config: jsonConfig,
+          remark: server.remark,
+          proxyOnly: _proxyOnly,
+        );
+
+        _addLog('V2Ray started successfully');
+
+        // ذخیره سرور فعلی
+        await _saveLastSelectedServer(server.remark);
+
+        // بروزرسانی وضعیت
+        _updateStatus();
+
+        // تاخیر قبل از بررسی مجدد پینگ
+        await Future.delayed(const Duration(seconds: 3));
+
+        // بررسی مجدد پینگ بعد از اتصال
+        try {
+          await _updatePing(server);
+        } catch (e) {
+          _addLog('Post-connection ping failed: $e');
+        }
       } catch (e) {
-        _showError('Invalid configuration format: $e');
-        setState(() {
-          _isLoading = false;
-        });
-        return;
+        _addLog('Error starting V2Ray: $e');
+        _showError('Error starting V2Ray: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isPingLoading[server.remark] = false;
+          });
+        }
       }
-
-      // Apply settings to the configuration
-      _applySettingsToConfig(configMap);
-
-      // Start V2Ray with the modified config
-      await _flutterV2ray.startV2Ray(
-        config: json.encode(configMap),
-        remark: server.remark,
-        proxyOnly: _proxyOnly,
-      );
-
-      // اضافه کردن یک تاخیر کوتاه قبل از شروع پینگ
-      await Future.delayed(const Duration(seconds: 2));
-
-      // شروع پینگ با یک پینگ اولیه
-      try {
-        await _updatePing(server);
-      } catch (e) {
-        _addLog('Initial ping update failed: $e');
-      }
-
-      // شروع پینگ‌های دوره‌ای
-      _startPingUpdates();
-      print('Started ping updates after connection'); // Debug print
-
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _isPingLoading[server.remark] = false;
-      });
-
-      _v2rayStatus.value = V2RayStatus(
-        state: 'CONNECTED',
-        uploadSpeed: 0,
-        downloadSpeed: 0,
-      );
-
-      _addLog('Connected to ${server.remark}');
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _isPingLoading[server.remark] = false;
-      });
-
-      _v2rayStatus.value = V2RayStatus(
-        state: 'DISCONNECTED',
-        uploadSpeed: 0,
-        downloadSpeed: 0,
-      );
-
       _addLog('Connection error: $e');
       _showError('Connection error: $e');
     }
   }
 
-  // New method to apply settings to the configuration
-  void _applySettingsToConfig(Map<String, dynamic> configMap) {
-    // Handle outbounds
-    if (configMap['outbounds'] != null && configMap['outbounds'].isNotEmpty) {
-      for (var outbound in configMap['outbounds']) {
-        // Apply Mux settings
-        if (_enableMux && outbound['mux'] == null) {
-          outbound['mux'] = {"enabled": true, "concurrency": 8};
-        } else if (!_enableMux && outbound['mux'] != null) {
-          outbound['mux']['enabled'] = false;
-        }
-
-        // Handle HTTP Upgrade settings
-        if (_enableHttpUpgrade && outbound['streamSettings'] != null) {
-          outbound['streamSettings']['network'] = 'httpupgrade';
-          if (outbound['streamSettings']['httpupgradeSettings'] == null) {
-            outbound['streamSettings']['httpupgradeSettings'] = {
-              "path": "/",
-              "host": "example.com",
-            };
-          }
-        }
-
-        // Ensure sockopt exists
-        if (outbound['streamSettings'] != null) {
-          if (outbound['streamSettings']['sockopt'] == null) {
-            outbound['streamSettings']['sockopt'] = {};
-          }
-
-          // Set domain strategy based on IPv6 setting
-          outbound['streamSettings']['sockopt']['domainStrategy'] =
-              _enableIPv6 ? 'UseIPv4v6' : 'UseIPv4';
-        }
+  // اضافه کردن تابع بروزرسانی وضعیت
+  Future<void> _updateStatus() async {
+    try {
+      final status = await _flutterV2ray.getV2rayStatus();
+      if (status != null) {
+        _v2rayStatus.value = status;
       }
-    }
-
-    // Ensure DNS settings exist and are properly configured
-    if (configMap['dns'] == null) {
-      configMap['dns'] = {
-        'servers':
-            _enableIPv6
-                ? [
-                  '8.8.8.8',
-                  '1.1.1.1',
-                  '2001:4860:4860::8888',
-                  '2606:4700:4700::1111',
-                ]
-                : ['8.8.8.8', '1.1.1.1'],
-        'queryStrategy': _enableIPv6 ? 'UseIPv4v6' : 'UseIPv4',
-      };
-    } else {
-      // Update existing DNS settings
-      configMap['dns']['queryStrategy'] = _enableIPv6 ? 'UseIPv4v6' : 'UseIPv4';
-
-      // Update DNS servers list
-      List<dynamic> servers = configMap['dns']['servers'] ?? [];
-      if (_enableIPv6) {
-        if (!servers.contains('2001:4860:4860::8888')) {
-          servers.add('2001:4860:4860::8888');
-        }
-        if (!servers.contains('2606:4700:4700::1111')) {
-          servers.add('2606:4700:4700::1111');
-        }
-      } else {
-        // Filter out IPv6 addresses if IPv6 is disabled
-        servers =
-            servers
-                .where((server) => !server.toString().contains(':'))
-                .toList();
-      }
-      configMap['dns']['servers'] = servers;
+    } catch (e) {
+      _addLog('Error updating status: $e');
     }
   }
+
+  // New method to apply settings to the configuration
 
   Future<void> _updatePing(V2RayServer server) async {
     if (!mounted) return;
@@ -1160,6 +1158,10 @@ class _V2RayManagerState extends State<V2RayManager>
       _addLog('Skipping ping for ${server.remark}: Invalid address or port');
       return;
     }
+
+    setState(() {
+      _isPingLoading[server.remark] = true;
+    });
 
     // Detect if the address is IPv6
     bool isIPv6 = server.address.contains(':');
@@ -1186,83 +1188,24 @@ class _V2RayManagerState extends State<V2RayManager>
 
       if (mounted) {
         setState(() {
-          _pingResults[server.remark] = delay;
+          // اطمینان از اینکه مقدار پینگ null نیست
+          if (delay > 0) {
+            _pingResults[server.remark] = delay;
+          }
+          _isPingLoading[server.remark] = false;
         });
         _addLog('Ping result for ${server.remark}: ${delay}ms');
-        print('Updated ping for ${server.remark}: ${delay}ms'); // Debug print
+        print('Ping result for ${server.remark}: ${delay}ms'); // اضافه کردن لاگ
       }
     } catch (e) {
-      _addLog('Ping update failed for ${server.remark}: $e');
-      print('Ping update failed for ${server.remark}: $e'); // Debug print
       if (mounted) {
         setState(() {
-          _pingResults[server.remark] = 0;
+          _isPingLoading[server.remark] = false;
         });
       }
+      _addLog('Error updating ping: $e');
+      print('Error updating ping: $e'); // اضافه کردن لاگ
     }
-  }
-
-  void _startPingUpdates() {
-    _stopPingUpdates();
-    _addLog('Starting periodic ping updates');
-    print('Starting periodic ping updates'); // Debug print
-
-    _pingTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
-      if (_currentServer.isEmpty) {
-        _addLog('No current server selected, skipping ping update');
-        return;
-      }
-
-      final currentServerObj = _servers.firstWhere(
-        (s) => s.remark == _currentServer,
-        orElse: () => V2RayServer(remark: '', address: '', port: 0, config: ''),
-      );
-
-      if (currentServerObj.remark.isEmpty) {
-        _addLog(
-          'Current server not found in server list, stopping ping updates',
-        );
-        _stopPingUpdates();
-        return;
-      }
-
-      // Only update ping if we're actually connected and not already pinging
-      if (_v2rayStatus.value.state == 'CONNECTED' &&
-          !(_isPingLoading[currentServerObj.remark] ?? false)) {
-        setState(() {
-          _isPingLoading[currentServerObj.remark] = true;
-        });
-
-        try {
-          print('Updating ping for ${currentServerObj.remark}'); // Debug print
-          await _updatePing(currentServerObj).timeout(
-            const Duration(seconds: 8),
-            onTimeout: () {
-              _addLog('Ping update timed out for ${currentServerObj.remark}');
-              if (mounted) {
-                setState(() {
-                  _isPingLoading[currentServerObj.remark] = false;
-                });
-              }
-            },
-          );
-        } catch (e) {
-          _addLog('Periodic ping update error: $e');
-          print('Periodic ping update error: $e'); // Debug print
-          if (mounted) {
-            setState(() {
-              _isPingLoading[currentServerObj.remark] = false;
-            });
-          }
-        } finally {
-          if (mounted) {
-            setState(() {
-              _isPingLoading[currentServerObj.remark] = false;
-            });
-          }
-        }
-      }
-    });
   }
 
   Future<void> _handleServerChange(String newServer) async {
@@ -1311,8 +1254,7 @@ class _V2RayManagerState extends State<V2RayManager>
     bool tempProxyOnly = _proxyOnly;
     bool tempEnableIPv6 = _enableIPv6;
     bool tempEnableMux = _enableMux;
-    // حذف متغیر tempEnableIPv6Ping
-    bool tempEnableHttpUpgrade = _enableHttpUpgrade;
+    // حذف متغیر tempEnableHttpUpgrade
     final defaultSubController = TextEditingController(
       text: _defaultSubscriptionUrl,
     );
@@ -1361,19 +1303,8 @@ class _V2RayManagerState extends State<V2RayManager>
                         });
                       },
                     ),
-                    // حذف SwitchListTile مربوط به Enable IPv6 Ping
-                    SwitchListTile(
-                      title: const Text('HTTP Upgrade'),
-                      subtitle: const Text(
-                        'Use HTTP Upgrade for better compatibility',
-                      ),
-                      value: tempEnableHttpUpgrade,
-                      onChanged: (value) {
-                        setDialogState(() {
-                          tempEnableHttpUpgrade = value;
-                        });
-                      },
-                    ),
+                    // حذف SwitchListTile مربوط به HTTP Upgrade
+                    // حذف دکمه تست HTTP Upgrade
                     const Divider(),
                     const Text('Default Subscription URL:'),
                     TextField(
@@ -1399,7 +1330,7 @@ class _V2RayManagerState extends State<V2RayManager>
                       _enableIPv6 = tempEnableIPv6;
                       // حذف خط مربوط به _enableIPv6Ping
                       _enableMux = tempEnableMux;
-                      _enableHttpUpgrade = tempEnableHttpUpgrade;
+                      // حذف خط مربوط به _enableHttpUpgrade
                     });
 
                     await _saveSettings();
@@ -1584,13 +1515,14 @@ class _V2RayManagerState extends State<V2RayManager>
     if (!mounted) return;
 
     try {
-      _stopPingUpdates();
+      _stopPingUpdates(); // اطمینان از توقف تایمر پینگ
       await _flutterV2ray.stopV2Ray();
 
       if (!mounted) return;
       setState(() {
+        // فقط وضعیت پینگ در حال بارگیری را پاک کنیم، نه نتایج پینگ
         _isPingLoading.clear();
-        _pingResults.clear();
+        // _pingResults.clear(); // این خط را حذف یا کامنت کنیم
       });
 
       _v2rayStatus.value = V2RayStatus(
@@ -1608,70 +1540,38 @@ class _V2RayManagerState extends State<V2RayManager>
   }
 
   Future<void> refreshServers() async {
-    if (!mounted) return;
-
-    if (_subscriptionUrl.isEmpty) {
-      _showError('No subscription URL configured');
-      _openSubscriptionManager();
-      return;
-    }
+    if (_isLoading) return;
 
     setState(() {
       _isLoading = true;
     });
-    _addLog('Refreshing servers...');
 
     try {
-      final response = await http.get(Uri.parse(_subscriptionUrl));
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final servers = _parseSubscription(response.body);
-        await _saveServers(servers);
-
-        if (!mounted) return;
-        setState(() {
-          _servers = servers;
-          _isLoading = false;
-          _pingResults.clear();
-          _isPingLoading.clear();
-
-          if (_currentServer.isNotEmpty) {
-            _disconnect();
-          }
-        });
-
-        await _loadSavedServers();
-        _addLog('Successfully refreshed ${servers.length} servers');
-        if (mounted) {
-          SnackBarUtils.showSnackBar(
-            context,
-            message: 'Servers refreshed successfully',
-          );
-        }
+      // If we have a subscription URL, fetch servers for that subscription
+      if (_subscriptionUrl.isNotEmpty) {
+        await _fetchServers(_subscriptionUrl);
       } else {
-        if (!mounted) return;
+        // If no subscription URL (All servers view), reload all servers
+        final allServers = await _loadAllServers();
         setState(() {
-          _isLoading = false;
+          _servers = allServers;
         });
-        _addLog('Failed to refresh servers: ${response.statusCode}');
-        SnackBarUtils.showSnackBar(
-          context,
-          message: 'Failed to refresh servers: ${response.statusCode}',
-          isError: true,
-        );
       }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-      });
-      _addLog('Error refreshing servers: $e');
+
+      _addLog('Servers refreshed successfully');
       SnackBarUtils.showSnackBar(
         context,
-        message: 'Error refreshing servers: $e',
-        isError: true,
+        message: 'Servers refreshed successfully',
       );
+    } catch (e) {
+      _addLog('Error refreshing servers: $e');
+      _showError('Error refreshing servers: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -1901,37 +1801,235 @@ class _V2RayManagerState extends State<V2RayManager>
   // اضافه کردن متد جدید برای پینگ همه سرورها
 
   // تابع برای پینگ دستی یک سرور
-  Future<void> _pingServer(V2RayServer server) async {
-    if (!mounted) return;
 
-    setState(() {
-      _isPingLoading[server.remark] = true;
+  // متد جدید برای پارس کردن URL های V2Ray
+
+  // پارس کردن URL های VLESS
+  Map<String, dynamic> _parseVLESSURL(String url) {
+    _addLog(
+      'Parsing VLESS URL: ${url.substring(0, Math.min(30, url.length))}...',
+    );
+
+    // حذف پیشوند vless://
+    String cleanUrl = url.replaceFirst('vless://', '');
+
+    // جدا کردن بخش fragment (بعد از #)
+    String fragment = '';
+    if (cleanUrl.contains('#')) {
+      final parts = cleanUrl.split('#');
+      cleanUrl = parts[0];
+      fragment = parts.length > 1 ? Uri.decodeComponent(parts[1]) : '';
+    }
+
+    // پارس کردن URI
+    final uri = Uri.parse('vless://$cleanUrl');
+
+    // استخراج UUID از userInfo
+    String uuid = '';
+    if (uri.userInfo.isNotEmpty) {
+      uuid = uri.userInfo.split(':')[0];
+    }
+
+    _addLog('VLESS: UUID=$uuid, Host=${uri.host}, Port=${uri.port}');
+
+    // پارس کردن پارامترها از query و fragment
+    final params = <String, String>{};
+
+    // پارامترهای query
+    uri.queryParameters.forEach((key, value) {
+      params[key] = value;
     });
 
-    _addLog('Manual ping test for ${server.remark}');
-
-    try {
-      await _updatePing(server);
-    } catch (e) {
-      _addLog('Manual ping test failed: $e');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isPingLoading[server.remark] = false;
-        });
+    // پارامترهای fragment
+    if (fragment.isNotEmpty) {
+      final parts = fragment.split('&');
+      for (var part in parts) {
+        if (part.contains('=')) {
+          final keyValue = part.split('=');
+          if (keyValue.length == 2) {
+            params[keyValue[0]] = Uri.decodeComponent(keyValue[1]);
+          }
+        }
       }
     }
+
+    _addLog('VLESS params: ${params.toString()}');
+
+    // تنظیم مقادیر پیش‌فرض برای پارامترهای مهم
+    final type = params['type'] ?? 'tcp';
+    final security = params['security'] ?? 'none';
+    final path = params['path'] ?? '/';
+    final host = params['host'] ?? uri.host;
+
+    // ساخت کانفیگ VLESS با پشتیبانی از HTTP Upgrade
+    final config = {
+      "stats": {}, // اطمینان از وجود بخش stats برای ثبت آمار ترافیک
+      "log": {"loglevel": "warning"},
+      "outbounds": [
+        {
+          "protocol": "vless",
+          "settings": {
+            "vnext": [
+              {
+                "address": uri.host,
+                "port": uri.port > 0 ? uri.port : 443,
+                "users": [
+                  {
+                    "id": uuid,
+                    "encryption": "none",
+                    "flow": params['flow'] ?? "",
+                  },
+                ],
+              },
+            ],
+          },
+          "streamSettings": {
+            "network": type, // استفاده از نوع شبکه از پارامترها
+            "security": security,
+            "sockopt": {
+              "tcpFastOpen": true,
+              "tcpKeepAliveInterval": 30,
+              "domainStrategy": _enableIPv6 ? "UseIPv4v6" : "UseIP",
+            },
+          },
+          "tag": "proxy",
+          "mux": {"enabled": _enableMux, "concurrency": 8},
+        },
+      ],
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
+        ],
+      },
+      "dns": {
+        "servers":
+            _enableIPv6
+                ? [
+                  "8.8.8.8",
+                  "1.1.1.1",
+                  "2001:4860:4860::8888",
+                  "2606:4700:4700::1111",
+                ]
+                : ["8.8.8.8", "1.1.1.1"],
+        "queryStrategy": _enableIPv6 ? "UseIPv4v6" : "UseIP",
+      },
+      // اضافه کردن بخش policy برای بهبود گزارش آمار
+      "policy": {
+        "levels": {
+          "0": {"statsUserUplink": true, "statsUserDownlink": true},
+        },
+        "system": {
+          "statsInboundUplink": true,
+          "statsInboundDownlink": true,
+          "statsOutboundUplink": true,
+          "statsOutboundDownlink": true,
+        },
+      },
+    };
+
+    // تنظیم پارامترهای مخصوص هر نوع شبکه
+    final outbound = (config["outbounds"] as List<dynamic>)[0];
+
+    if (type == "tcp") {
+      outbound["streamSettings"]["tcpSettings"] = {
+        "header": {"type": "none"},
+      };
+    } else if (type == "ws") {
+      outbound["streamSettings"]["wsSettings"] = {
+        "path": path,
+        "headers": {"Host": host},
+      };
+    } else if (type == "http" || type == "h2") {
+      outbound["streamSettings"]["httpSettings"] = {
+        "path": path,
+        "host": [host],
+      };
+    } else if (type == "grpc") {
+      outbound["streamSettings"]["grpcSettings"] = {
+        "serviceName": path,
+        "multiMode": false,
+      };
+    } else if (type == "httpupgrade") {
+      // بهبود تنظیمات HTTP Upgrade
+      outbound["streamSettings"]["httpupgradeSettings"] = {
+        "path": path,
+        "host": host,
+      };
+    }
+
+    // تنظیمات TLS اگر فعال باشد
+    if (security == "tls") {
+      outbound["streamSettings"]["tlsSettings"] = {
+        "serverName": params['sni'] ?? host,
+        "allowInsecure": false,
+      };
+    }
+
+    _addLog('Generated VLESS config with type: $type');
+    return config;
+  }
+
+  // پارس کردن URL های VMESS
+  Map<String, dynamic> _parseVMESSURL(String url) {
+    // حذف پیشوند vmess://
+    final cleanUrl = url.replaceFirst('vmess://', '');
+
+    // دیکود base64
+    final decoded = utf8.decode(base64.decode(cleanUrl));
+
+    // پارس JSON
+    final Map<String, dynamic> data = json.decode(decoded);
+
+    // ساخت کانفیگ VMESS
+    final config = {
+      "stats": {},
+      "outbounds": [
+        {
+          "protocol": "vmess",
+          "settings": {
+            "vnext": [
+              {
+                "address": data['add'],
+                "port": int.parse(data['port'].toString()),
+                "users": [
+                  {
+                    "id": data['id'],
+                    "alterId": int.parse(data['aid'].toString()),
+                    "security": data['scy'] ?? "auto",
+                  },
+                ],
+              },
+            ],
+          },
+          "streamSettings": {
+            "network": "httpupgrade",
+            "security": data['tls'] == 'tls' ? "tls" : "none",
+            "httpupgradeSettings": {
+              "path": data['path'] ?? "/",
+              "host": data['host'] ?? data['add'],
+            },
+          },
+          "tag": "proxy",
+        },
+      ],
+      "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
+        ],
+      },
+    };
+
+    _addLog('Generated VMESS config with httpupgrade');
+    return config;
   }
 
   // تابع برای پینگ همه سرورها
   Future<void> _pingAllServers() async {
-    if (!mounted || _isLoading) return;
+    if (!mounted) return;
 
     _addLog('Starting ping test for all servers');
-
-    setState(() {
-      _isLoading = true;
-    });
 
     try {
       for (var server in _servers) {
@@ -1957,15 +2055,32 @@ class _V2RayManagerState extends State<V2RayManager>
         await Future.delayed(const Duration(milliseconds: 300));
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+      // اگر سرور فعلی انتخاب شده است، پینگ آن را دوباره بررسی کنیم
+      if (_currentServer.isNotEmpty) {
+        try {
+          final currentServerObj = _servers.firstWhere(
+            (s) => s.remark == _currentServer,
+            orElse: () => throw Exception('Current server not found'),
+          );
+          await _updatePing(currentServerObj);
+        } catch (e) {
+          _addLog('Failed to update ping for current server: $e');
+        }
       }
     }
 
     _addLog('Completed ping test for all servers');
+
+    // استفاده از SnackBarUtils به جای ScaffoldMessenger مستقیم
+    if (mounted) {
+      SnackBarUtils.showSnackBar(
+        context,
+        message: 'Ping test completed for all servers',
+      );
+    }
   }
+
+  // تابع برای پینگ فقط سرور انتخاب شده
 
   @override
   Widget build(BuildContext context) {
@@ -2170,41 +2285,40 @@ class _V2RayManagerState extends State<V2RayManager>
                           _subscriptionUrl = '';
                         });
                         await _saveSubscriptionUrl('');
-                        // نمایش همه سرورهای ذخیره شده
+                        // نمایش همه سرورهای ذخیره شده از تمام سابسکریپشن‌ها
+                        final allServers = await _loadAllServers();
                         setState(() {
-                          _servers = _savedServers;
+                          _servers = allServers;
                         });
                       },
-                      borderRadius: BorderRadius.circular(20),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color:
                               isSelected
                                   ? Theme.of(context).colorScheme.primary
-                                  : Theme.of(context).colorScheme.surface,
-                          borderRadius: BorderRadius.circular(20),
+                                  : Colors.transparent,
+                          borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color:
                                 isSelected
                                     ? Theme.of(context).colorScheme.primary
-                                    : Theme.of(
-                                      context,
-                                    ).colorScheme.outline.withOpacity(0.5),
+                                    : Theme.of(context).dividerColor,
                           ),
                         ),
-                        alignment: Alignment.center,
                         child: Text(
                           'All',
                           style: TextStyle(
                             color:
                                 isSelected
                                     ? Theme.of(context).colorScheme.onPrimary
-                                    : Theme.of(context).colorScheme.onSurface,
-                            fontWeight:
-                                isSelected
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
+                                    : Theme.of(
+                                      context,
+                                    ).textTheme.bodyMedium?.color,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
                       ),
@@ -2316,19 +2430,21 @@ class _V2RayManagerState extends State<V2RayManager>
                         padding: const EdgeInsets.only(bottom: 80),
                         itemCount: _servers.length,
                         itemBuilder: (context, index) {
+                          final server = _servers[index];
                           return ServerCard(
-                            server: _servers[index],
+                            server: server,
                             currentServer: _currentServer,
-                            v2rayStatus: _v2rayStatus,
+
                             pingResults: _pingResults,
                             isPingLoading: _isPingLoading,
                             isLoading: _isLoading,
                             onSelect:
                                 (server) => _handleServerChange(server.remark),
-                            onDelete: () => _deleteServer(_servers[index]),
-                            onEdit: () => _editServer(_servers[index]),
+                            onDelete: () => _deleteServer(server),
+                            onEdit: () => _editServer(server),
                             onConnect: _connect,
-                            onPing: _pingServer,
+                            v2rayStatus: _v2rayStatus,
+                            // onPing: _pingServer, // این خط را حذف یا کامنت می‌کنیم
                           );
                         },
                       ),
@@ -2510,7 +2626,213 @@ class _V2RayManagerState extends State<V2RayManager>
                 },
               ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      bottomNavigationBar:
+          _currentServer.isEmpty
+              ? null // Don't show bottom bar when no server is selected
+              : ValueListenableBuilder(
+                valueListenable: _v2rayStatus,
+                builder: (context, status, _) {
+                  final isDark =
+                      Theme.of(context).brightness == Brightness.dark;
+                  final colorScheme = Theme.of(context).colorScheme;
+                  final ping = _pingResults[_currentServer] ?? 0;
+                  final isConnected = status.state == 'CONNECTED';
+
+                  return Container(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                    margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    decoration: BoxDecoration(
+                      color: isDark ? Colors.grey[850] : Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: isDark ? Colors.grey[700]! : Colors.grey[300]!,
+                        width: 1.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 10,
+                          spreadRadius: 0,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // نوار پیشرفت با انیمیشن برای وضعیت اتصال
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: TweenAnimationBuilder<double>(
+                            tween: Tween<double>(
+                              begin: 0.0,
+                              end: isConnected ? 1.0 : 0.0,
+                            ),
+                            duration: const Duration(milliseconds: 500),
+                            curve: Curves.easeInOut,
+                            builder: (context, value, _) {
+                              return LinearProgressIndicator(
+                                value: value,
+                                backgroundColor:
+                                    isDark
+                                        ? Colors.grey[800]
+                                        : Colors.grey[200],
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  isConnected ? Colors.green : Colors.red,
+                                ),
+                                minHeight: 4,
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // آمار ترافیک با نمودار
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildStatItem(
+                              icon: Icons.arrow_upward_rounded,
+                              label: 'Upload',
+                              value: _formatBytes(status.uploadSpeed),
+                              color: colorScheme.primary,
+                              isDark: isDark,
+                              progress:
+                                  (status.uploadSpeed) /
+                                  1024 /
+                                  10, // نسبت برای نمودار
+                            ),
+                            _buildDivider(isDark),
+                            _buildStatItem(
+                              icon: Icons.arrow_downward_rounded,
+                              label: 'Download',
+                              value: _formatBytes(status.downloadSpeed),
+                              color: colorScheme.secondary,
+                              isDark: isDark,
+                              progress:
+                                  (status.downloadSpeed) /
+                                  1024 /
+                                  10, // نسبت برای نمودار
+                            ),
+                            _buildDivider(isDark),
+                            _buildStatItem(
+                              icon: Icons.timer_outlined,
+                              label: 'Ping',
+                              value: ping > 0 ? '$ping ms' : 'N/A',
+                              color: _getPingColor(ping),
+                              isDark: isDark,
+                              progress:
+                                  ping > 0
+                                      ? ping / 500
+                                      : 0, // نسبت برای نمودار (حداکثر 500ms)
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
     );
+  }
+
+  Widget _buildDivider(bool isDark) {
+    return Container(
+      height: 30,
+      width: 1,
+      color: isDark ? Colors.grey[700] : Colors.grey[300],
+    );
+  }
+
+  Widget _buildStatItem({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+    required bool isDark,
+    required double progress,
+  }) {
+    // محدود کردن نسبت بین 0 تا 1
+    final clampedRatio = progress.clamp(0.0, 1.0);
+
+    return Expanded(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: color, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: isDark ? Colors.grey[400] : Colors.grey[700],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 8),
+          // نمودار میله‌ای با انیمیشن
+          TweenAnimationBuilder<double>(
+            tween: Tween<double>(begin: 0.0, end: clampedRatio),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.easeOutCubic,
+            builder: (context, animatedRatio, _) {
+              return Container(
+                height: 4,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.grey[800] : Colors.grey[200],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                child: FractionallySizedBox(
+                  alignment: Alignment.centerLeft,
+                  widthFactor: animatedRatio,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: BorderRadius.circular(2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: color.withOpacity(0.5),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _getPingColor(int ping) {
+    if (ping <= 0) return Colors.grey;
+    if (ping < 800) return Colors.green;
+    if (ping < 1100) return Colors.orange;
+    return Colors.red;
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B/s';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB/s';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB/s';
   }
 
   // اضافه کردن متد جدید برای پردازش کلیپ‌برد
@@ -2581,10 +2903,6 @@ class _V2RayManagerState extends State<V2RayManager>
       future: PackageInfo.fromPlatform(),
       builder: (context, snapshot) {
         return PopupMenuButton(
-          offset: const Offset(0, 8),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
           icon: const Icon(Icons.more_vert),
           itemBuilder:
               (context) => [
@@ -2607,6 +2925,23 @@ class _V2RayManagerState extends State<V2RayManager>
                   icon: Icons.system_update_rounded,
                   title: 'Check for Updates',
                   onTap: () => UpdateChecker.checkForUpdate(context),
+                ),
+                _buildPopupMenuItem(
+                  icon:
+                      Theme.of(context).brightness == Brightness.dark
+                          ? Icons.light_mode
+                          : Icons.dark_mode,
+                  title:
+                      Theme.of(context).brightness == Brightness.dark
+                          ? 'Light Theme'
+                          : 'Dark Theme',
+                  onTap: () {
+                    // Toggle theme using MyApp's method
+                    final myAppState = MyApp.of(context);
+                    if (myAppState != null) {
+                      myAppState.toggleTheme();
+                    }
+                  },
                 ),
                 PopupMenuItem(
                   enabled: false,
@@ -3270,7 +3605,7 @@ class _V2RayManagerState extends State<V2RayManager>
     await prefs.setBool('proxy_only', _proxyOnly);
     await prefs.setBool('enable_ipv6', _enableIPv6);
     await prefs.setBool('enable_mux', _enableMux);
-    await prefs.setBool('enable_httpupgrade', _enableHttpUpgrade);
+    // حذف خط مربوط به enable_httpupgrade
   }
 
   Future<void> _loadSettings() async {
@@ -3279,7 +3614,7 @@ class _V2RayManagerState extends State<V2RayManager>
       _proxyOnly = prefs.getBool('proxy_only') ?? false;
       _enableIPv6 = prefs.getBool('enable_ipv6') ?? false;
       _enableMux = prefs.getBool('enable_mux') ?? false;
-      _enableHttpUpgrade = prefs.getBool('enable_httpupgrade') ?? false;
+      // حذف خط مربوط به enable_httpupgrade
     });
   }
 
@@ -3419,6 +3754,10 @@ class _V2RayManagerState extends State<V2RayManager>
           ),
     );
   }
+}
+
+extension on FlutterV2ray {
+  getV2rayStatus() {}
 }
 
 extension on V2RayStatus {}
