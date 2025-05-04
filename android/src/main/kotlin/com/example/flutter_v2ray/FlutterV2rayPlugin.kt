@@ -5,13 +5,15 @@ private fun startV2Ray(call: MethodCall, result: Result) {
         val proxyOnly = call.argument<Boolean>("proxyOnly") ?: false
         val enableIPv6 = call.argument<Boolean>("enableIPv6") ?: false
         val enableMux = call.argument<Boolean>("enableMux") ?: false
+        val enableHttpUpgrade = call.argument<Boolean>("enableHttpUpgrade") ?: false
         
         v2rayService?.startV2Ray(
             config, 
             remark, 
             proxyOnly, 
             enableIPv6,
-            enableMux
+            enableMux,
+            enableHttpUpgrade
         )
         
         result.success(null)
@@ -35,6 +37,8 @@ private fun getV2RayStatus(result: Result) {
 
 // در متد onMethodCall اضافه کنید:
 "getV2RayStatus" -> getV2RayStatus(result)
+
+
 
 
 

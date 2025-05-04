@@ -13,7 +13,7 @@ class _ProtocolManagerState extends State<ProtocolManager> {
   bool _supportVless = true;
   bool _supportShadowsocks = true;
   bool _enableIPv6 = false;
-  // حذف متغیر _enableHttpUpgrade
+  bool _enableHttpUpgrade = false;
 
   @override
   void initState() {
@@ -28,7 +28,7 @@ class _ProtocolManagerState extends State<ProtocolManager> {
       _supportVless = prefs.getBool('support_vless') ?? true;
       _supportShadowsocks = prefs.getBool('support_shadowsocks') ?? true;
       _enableIPv6 = prefs.getBool('enable_ipv6') ?? false;
-      // حذف خط مربوط به enable_httpupgrade
+      _enableHttpUpgrade = prefs.getBool('enable_httpupgrade') ?? false;
     });
   }
 
@@ -38,7 +38,7 @@ class _ProtocolManagerState extends State<ProtocolManager> {
     await prefs.setBool('support_vless', _supportVless);
     await prefs.setBool('support_shadowsocks', _supportShadowsocks);
     await prefs.setBool('enable_ipv6', _enableIPv6);
-    // حذف خط مربوط به enable_httpupgrade
+    await prefs.setBool('enable_httpupgrade', _enableHttpUpgrade);
   }
 
   Widget _buildSettingsSwitch({
@@ -142,7 +142,18 @@ class _ProtocolManagerState extends State<ProtocolManager> {
                     _saveSettings();
                   },
                 ),
-                // حذف SwitchListTile مربوط به HTTP Upgrade
+                _buildSettingsSwitch(
+                  icon: Icons.upgrade,
+                  title: 'HTTP Upgrade',
+                  subtitle: 'Enable HTTP Upgrade support',
+                  value: _enableHttpUpgrade,
+                  onChanged: (value) {
+                    setState(() {
+                      _enableHttpUpgrade = value;
+                    });
+                    _saveSettings();
+                  },
+                ),
               ],
             ),
           ),
@@ -151,6 +162,7 @@ class _ProtocolManagerState extends State<ProtocolManager> {
     );
   }
 }
+
 
 
 

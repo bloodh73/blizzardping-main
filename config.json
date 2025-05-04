@@ -22,12 +22,20 @@
         ]
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "http",
         "security": "tls",
-        "tcpSettings": {
-          "header": {
-            "type": "none"
+        "httpSettings": {
+          "path": "/",
+          "host": ["your-server-address"],
+          "method": "GET",
+          "headers": {
+            "Connection": ["Upgrade"],
+            "Upgrade": ["websocket"]
           }
+        },
+        "tlsSettings": {
+          "serverName": "your-server-address",
+          "allowInsecure": false
         }
       },
       "tag": "proxy"
@@ -49,4 +57,11 @@
     ]
   }
 }
+
+
+
+
+
+
+
 

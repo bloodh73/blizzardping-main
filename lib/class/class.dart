@@ -16,8 +16,8 @@ class _ServerHeader extends StatelessWidget {
   final String serverName;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
-  final Future<void> Function(V2RayServer)? onPing;
-  final V2RayServer server;
+  final Future<void> Function(V2RrayServer)? onPing;
+  final V2RrayServer server;
 
   const _ServerHeader({
     required this.isActive,
@@ -796,17 +796,17 @@ class ServerCard extends StatelessWidget {
   static const double _iconSize = 52;
   static const Duration _animDuration = Duration(milliseconds: 300);
 
-  final V2RayServer server;
+  final V2RrayServer server;
   final String currentServer;
   final ValueNotifier<V2RayStatus> v2rayStatus;
   final Map<String, int> pingResults;
   final Map<String, bool> isPingLoading;
   final bool isLoading;
-  final Function(V2RayServer) onSelect;
+  final Function(V2RrayServer) onSelect;
   final VoidCallback onDelete;
-  final Future<void> Function(V2RayServer)? onConnect;
+  final Future<void> Function(V2RrayServer)? onConnect;
   final VoidCallback onEdit;
-  final Future<void> Function(V2RayServer)? onPing;
+  final Future<void> Function(V2RrayServer)? onPing;
 
   const ServerCard({
     super.key,
