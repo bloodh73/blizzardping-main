@@ -7,184 +7,6 @@ import 'package:flutter_v2ray/model/v2ray_status.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _ServerHeader extends StatelessWidget {
-  final bool isActive;
-  final bool isConnected;
-  final bool isDark;
-  final ColorScheme colors;
-  final int ping;
-  final String serverName;
-  final VoidCallback onDelete;
-  final VoidCallback onEdit;
-  final Future<void> Function(V2RrayServer)? onPing;
-  final V2RrayServer server;
-
-  const _ServerHeader({
-    required this.isActive,
-    required this.isConnected,
-    required this.isDark,
-    required this.colors,
-    required this.ping,
-    required this.serverName,
-    required this.onDelete,
-    required this.onEdit,
-    required this.onPing,
-    required this.server,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        // Server icon and name
-        Expanded(
-          child: Row(
-            children: [
-              Stack(
-                children: [
-                  Container(
-                    width: ServerCard._iconSize,
-                    height: ServerCard._iconSize,
-                    decoration: BoxDecoration(
-                      color: _getIconBackgroundColor(),
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: _getIconColor().withOpacity(0.3),
-                          blurRadius: 8,
-                          spreadRadius: 1,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Center(
-                      child: Icon(
-                        Icons.cloud_outlined,
-                        color: _getIconColor(),
-                        size: 28,
-                      ),
-                    ),
-                  ),
-                  if (isActive)
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        width: 18,
-                        height: 18,
-                        decoration: BoxDecoration(
-                          color: isConnected ? Colors.green : Colors.red,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: isDark ? Colors.grey[900]! : Colors.white,
-                            width: 2,
-                          ),
-                        ),
-                        child: Center(
-                          child: Icon(
-                            isConnected ? Icons.check : Icons.close,
-                            color: Colors.white,
-                            size: 10,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      serverName,
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: isDark ? Colors.white : Colors.black87,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.location_on_outlined,
-                          size: 12,
-                          color: isDark ? Colors.grey[400] : Colors.grey[700],
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            server.address,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color:
-                                  isDark ? Colors.grey[400] : Colors.grey[700],
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // Action buttons
-        Row(
-          children: [
-            // Ping button
-            if (onPing != null)
-              IconButton(
-                icon: const Icon(Icons.speed_outlined, size: 20),
-                onPressed: () => onPing!(server),
-                tooltip: 'Test ping',
-                splashRadius: 24,
-              ),
-
-            // Edit button
-            IconButton(
-              icon: const Icon(Icons.edit_outlined, size: 20),
-              onPressed: onEdit,
-              tooltip: 'Edit server',
-              splashRadius: 24,
-            ),
-
-            // Delete button
-            IconButton(
-              icon: const Icon(Icons.delete_outline, size: 20),
-              onPressed: onDelete,
-              tooltip: 'Delete server',
-              splashRadius: 24,
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Color _getIconBackgroundColor() {
-    if (isActive) {
-      return isConnected
-          ? Colors.green.withOpacity(isDark ? 0.2 : 0.1)
-          : Colors.red.withOpacity(isDark ? 0.2 : 0.1);
-    }
-    return isDark ? Colors.grey[800]! : Colors.grey[200]!;
-  }
-
-  Color _getIconColor() {
-    if (isActive) {
-      return isConnected ? Colors.green : Colors.red;
-    }
-    return isDark ? Colors.grey[400]! : Colors.grey[700]!;
-  }
-}
 
 // ignore: unused_element
 class _StatusIcon extends StatelessWidget {
@@ -792,9 +614,9 @@ class LogViewer extends StatelessWidget {
 }
 
 class ServerCard extends StatelessWidget {
-  static const double _cardRadius = 20;
-  static const double _iconSize = 52;
-  static const Duration _animDuration = Duration(milliseconds: 300);
+  static const double _cardRadius = 14;
+  static const double _iconSize = 40;
+  static const Duration _animDuration = Duration(milliseconds: 150);
 
   final V2RrayServer server;
   final String currentServer;
@@ -803,8 +625,6 @@ class ServerCard extends StatelessWidget {
   final Map<String, bool> isPingLoading;
   final bool isLoading;
   final Function(V2RrayServer) onSelect;
-  final VoidCallback onDelete;
-  final Future<void> Function(V2RrayServer)? onConnect;
   final VoidCallback onEdit;
   final Future<void> Function(V2RrayServer)? onPing;
 
@@ -816,16 +636,16 @@ class ServerCard extends StatelessWidget {
     required this.isPingLoading,
     required this.isLoading,
     required this.onSelect,
-    required this.onDelete,
     required this.v2rayStatus,
-    this.onConnect,
     required this.onEdit,
     this.onPing,
+    required Future<void> Function(V2RrayServer server) onConnect,
   });
 
   bool get _isActive => server.remark == currentServer;
-  bool get _isConnected => v2rayStatus.value.state == 'CONNECTED';
+  bool get _isConnected => v2rayStatus.value.state == 'CONNECTED' && _isActive;
   int get _ping => pingResults[server.remark] ?? 0;
+  bool get _isPingLoading => isPingLoading[server.remark] ?? false;
 
   @override
   Widget build(BuildContext context) {
@@ -833,152 +653,246 @@ class ServerCard extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final colors = theme.colorScheme;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: AnimatedContainer(
-        duration: _animDuration,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(_cardRadius),
-          boxShadow: [
-            BoxShadow(
-              color: _getShadowColor().withOpacity(isDark ? 0.4 : 0.2),
-              blurRadius: 12,
-              spreadRadius: 2,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: AnimatedScale(
-          scale: isLoading ? 0.98 : 1.0,
-          duration: _animDuration,
-          child: _ServerCardContent(
-            isActive: _isActive,
-            isConnected: _isConnected,
-            isDark: isDark,
-            colors: colors,
-            ping: _ping,
-            onTap: isLoading ? null : () => onSelect(server),
-            serverName: server.remark,
-            onDelete: onDelete,
-            onEdit: onEdit,
-            child: _buildMainContent(isDark, colors),
-          ),
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      elevation: _isActive ? 2 : 1,
+      shadowColor:
+          _isActive
+              ? (_isConnected ? colors.primary : colors.error).withOpacity(0.3)
+              : Colors.black.withOpacity(0.1),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(_cardRadius),
+        side: BorderSide(
+          color:
+              _isActive
+                  ? (_isConnected ? colors.primary : colors.error).withOpacity(
+                    0.5,
+                  )
+                  : Colors.transparent,
+          width: 1,
         ),
       ),
-    );
-  }
-
-  Color _getShadowColor() {
-    if (_isActive) {
-      return _isConnected ? Colors.green : Colors.black;
-    }
-    return Colors.blue;
-  }
-
-  Widget _buildMainContent(bool isDark, ColorScheme colors) {
-    return Column(
-      children: [
-        _ServerHeader(
-          isActive: _isActive,
-          isConnected: _isConnected,
-          isDark: isDark,
-          colors: colors,
-          ping: _ping,
-          serverName: server.remark,
-          onDelete: onDelete,
-          onEdit: onEdit,
-          onPing: onPing,
-          server: server,
-        ),
-        const SizedBox(height: 12),
-      ],
-    );
-  }
-}
-
-class _ServerCardContent extends StatelessWidget {
-  final bool isActive;
-  final bool isConnected;
-  final bool isDark;
-  final ColorScheme colors;
-  final int ping;
-  final VoidCallback? onTap;
-  final String serverName;
-  final VoidCallback onDelete;
-  final Widget child;
-
-  const _ServerCardContent({
-    required this.isActive,
-    required this.isConnected,
-    required this.isDark,
-    required this.colors,
-    required this.ping,
-    required this.onTap,
-    required this.serverName,
-    required this.onDelete,
-    required this.child,
-    required VoidCallback onEdit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
       child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(ServerCard._cardRadius),
-        child: Container(
-          decoration: BoxDecoration(
-            color: _getBackgroundColor(),
-            borderRadius: BorderRadius.circular(ServerCard._cardRadius),
-            border: Border.all(color: _getBorderColor(), width: 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: _getShadowColor(),
-                blurRadius: 10,
-                spreadRadius: 1,
-                offset: const Offset(0, 4),
+        onTap: () => onSelect(server),
+        borderRadius: BorderRadius.circular(_cardRadius),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              // Status indicator
+              _buildStatusIndicator(isDark, colors),
+              const SizedBox(width: 12),
+
+              // Server details
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Server name
+                    Text(
+                      server.remark,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        color:
+                            _isActive
+                                ? (_isConnected ? colors.primary : colors.error)
+                                : (isDark ? Colors.white : Colors.black87),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+
+                    // Server address and ping
+                    Row(
+                      children: [
+                        // Server address
+                        Expanded(
+                          child: Text(
+                            server.address,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color:
+                                  isDark ? Colors.grey[400] : Colors.grey[700],
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+
+                        // Ping indicator
+                        if (_ping > 0)
+                          Container(
+                            margin: const EdgeInsets.only(left: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _getPingColor(_ping).withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.network_check,
+                                  size: 10,
+                                  color: _getPingColor(_ping),
+                                ),
+                                const SizedBox(width: 2),
+                                Text(
+                                  '$_ping ms',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w500,
+                                    color: _getPingColor(_ping),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              // Action buttons
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Ping button with loading indicator
+                  if (onPing != null)
+                    SizedBox(
+                      width: 32,
+                      height: 32,
+                      child:
+                          _isPingLoading
+                              ? Padding(
+                                padding: const EdgeInsets.all(6.0),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color:
+                                      isDark
+                                          ? Colors.white70
+                                          : Colors.grey[700],
+                                ),
+                              )
+                              : IconButton(
+                                icon: Icon(
+                                  Icons.speed_outlined,
+                                  size: 18,
+                                  color:
+                                      _ping > 0
+                                          ? _getPingColor(_ping)
+                                          : (isDark
+                                              ? Colors.white70
+                                              : Colors.grey[700]),
+                                ),
+                                onPressed: () => onPing!(server),
+                                tooltip: 'Test ping',
+                                splashRadius: 18,
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                              ),
+                    ),
+
+                  // Edit button
+                  SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: IconButton(
+                      icon: Icon(
+                        Icons.edit_outlined,
+                        size: 18,
+                        color: isDark ? Colors.white70 : Colors.grey[700],
+                      ),
+                      onPressed: onEdit,
+                      tooltip: 'Edit server',
+                      splashRadius: 18,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-          padding: const EdgeInsets.all(16),
-          child: child,
         ),
       ),
     );
   }
 
-  Color _getBackgroundColor() {
-    if (isDark) {
-      return isActive
-          ? (isConnected
-              ? Colors.green.withOpacity(0.05)
-              : Colors.red.withOpacity(0.05))
-          : Colors.grey[900]!;
-    } else {
-      return isActive
-          ? (isConnected
-              ? Colors.green.withOpacity(0.03)
-              : Colors.red.withOpacity(0.03))
-          : Colors.white;
-    }
+  Widget _buildStatusIndicator(bool isDark, ColorScheme colors) {
+    return Stack(
+      children: [
+        Container(
+          width: _iconSize,
+          height: _iconSize,
+          decoration: BoxDecoration(
+            color: _getStatusColor(
+              isDark,
+              colors,
+            ).withOpacity(isDark ? 0.15 : 0.1),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: _getStatusColor(isDark, colors).withOpacity(0.5),
+              width: 1.5,
+            ),
+          ),
+          child: Center(
+            child: Icon(
+              _isActive
+                  ? (_isConnected ? Icons.cloud_done : Icons.cloud_off)
+                  : Icons.cloud_outlined,
+              color: _getStatusColor(isDark, colors),
+              size: 20,
+            ),
+          ),
+        ),
+        if (_isActive)
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: _isConnected ? Colors.green : Colors.red,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isDark ? Colors.grey[900]! : Colors.white,
+                  width: 1.5,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: (_isConnected ? Colors.green : Colors.red)
+                        .withOpacity(0.3),
+                    blurRadius: 4,
+                    spreadRadius: 0,
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
-  Color _getBorderColor() {
-    if (isActive) {
-      return isConnected
-          ? Colors.green.withOpacity(isDark ? 0.5 : 0.3)
-          : Colors.red.withOpacity(isDark ? 0.5 : 0.3);
+  Color _getStatusColor(bool isDark, ColorScheme colors) {
+    if (_isActive) {
+      return _isConnected ? colors.primary : colors.error;
     }
-    return isDark ? Colors.grey[800]! : Colors.grey[300]!;
+    return isDark ? Colors.grey[400]! : Colors.grey[700]!;
   }
 
-  Color _getShadowColor() {
-    if (isActive) {
-      return isConnected
-          ? Colors.green.withOpacity(isDark ? 0.2 : 0.1)
-          : Colors.red.withOpacity(isDark ? 0.2 : 0.1);
-    }
-    return Colors.black.withOpacity(isDark ? 0.3 : 0.05);
+  Color _getPingColor(int ping) {
+    if (ping < 0) return Colors.red; // پینگ ناموفق با رنگ قرمز
+    if (ping == 0) return Colors.grey; // پینگ نامشخص با رنگ خاکستری
+    if (ping < 800) return Colors.green;
+    if (ping < 1100) return Colors.orange;
+    return Colors.red;
   }
 }
+

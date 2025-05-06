@@ -55,7 +55,10 @@ class V22RayServer {
       String network = data['net'] ?? 'tcp';
 
       // Check if httpupgrade is specified in the parameters
-      if (data['net'] == 'http' && data['type'] == 'httpupgrade') {
+      if (data['type'] == 'httpupgrade' ||
+          (data['net'] == 'http' && data['type'] == 'httpupgrade') ||
+          (data['headers'] != null &&
+              data['headers']['Upgrade'] == 'websocket')) {
         network = 'httpupgrade';
       }
 
@@ -77,8 +80,6 @@ class V22RayServer {
       // VLESS URLs are in the format: vless://uuid@host:port?params#remark
       final uri = Uri.parse(url);
 
-      // Extract user info (UUID)
-
       // Extract parameters
       final params = uri.queryParameters;
 
@@ -86,7 +87,9 @@ class V22RayServer {
       String network = params['type'] ?? 'tcp';
 
       // Check if httpupgrade is specified in the parameters
-      if (params['type'] == 'http' && params['headerType'] == 'httpupgrade') {
+      if (params['type'] == 'httpupgrade' ||
+          (params['type'] == 'http' && params['headerType'] == 'httpupgrade') ||
+          params['security'] == 'httpupgrade') {
         network = 'httpupgrade';
       }
 
@@ -219,9 +222,12 @@ class V22RayServer {
   }
 
   // Helper method to get full configuration for V2Ray with httpupgrade support
-  String getFullConfiguration({bool enableHttpUpgrade = false}) {
+  Future<String> getFullConfiguration({bool enableHttpUpgrade = false}) async {
     if (enableHttpUpgrade &&
-        (network == 'tcp' || network == 'http' || network == 'ws' || network == null)) {
+        (network == 'tcp' ||
+            network == 'http' ||
+            network == 'ws' ||
+            network == null)) {
       try {
         // For VMess and VLESS protocols
         if (config.startsWith('vmess://') || config.startsWith('vless://')) {
@@ -245,8 +251,13 @@ class V22RayServer {
             encryption = 'auto';
             path = data['path'] ?? '/';
             hosts = data['host'] != null ? [data['host']] : [address];
+
+            // اضافه کردن لاگ برای دیباگ
+            print(
+              'VMess config: id=$id, address=$address, port=$port, path=$path, hosts=$hosts',
+            );
           } else {
-            // VLESS
+            // VLESS - اصلاح شده
             protocol = 'vless';
             final uri = Uri.parse(config);
             final params = uri.queryParameters;
@@ -254,17 +265,41 @@ class V22RayServer {
             id = uri.userInfo;
             address = uri.host;
             port = uri.port > 0 ? uri.port : 443;
-            encryption = 'none';
+            encryption = params['encryption'] ?? 'none';
             path = params['path'] ?? '/';
-            hosts = params['host']?.split(',') ?? [address];
-            
+
+            // اصلاح شده: استخراج host از پارامترها
+            if (params['host'] != null && params['host']!.isNotEmpty) {
+              hosts = params['host']!.split(',');
+            } else {
+              hosts = [address];
+            }
+
             // اضافه کردن لاگ برای دیباگ
-            print('VLESS config: id=$id, address=$address, port=$port, path=$path, hosts=$hosts');
+            print(
+              'VLESS config: id=$id, address=$address, port=$port, path=$path, hosts=$hosts, encryption=$encryption',
+            );
           }
 
-          // Create a new httpupgrade config with proper settings
+          // اضافه کردن آمار برای پشتیبانی از آپلود و دانلود
           final httpUpgradeConfig = {
             "log": {"loglevel": "warning"},
+            "stats": {}, // اضافه کردن بخش stats
+            "policy": {
+              "levels": {
+                "0": {"statsUserUplink": true, "statsUserDownlink": true},
+              },
+              "system": {
+                "statsInboundUplink": true,
+                "statsInboundDownlink": true,
+                "statsOutboundUplink": true,
+                "statsOutboundDownlink": true,
+              },
+            },
+            "api": {
+              "tag": "api",
+              "services": ["StatsService"],
+            },
             "inbounds": [
               {
                 "tag": "socks-in",
@@ -276,6 +311,13 @@ class V22RayServer {
                   "enabled": true,
                   "destOverride": ["http", "tls", "quic"],
                 },
+              },
+              {
+                "tag": "api",
+                "port": 8888,
+                "protocol": "dokodemo-door",
+                "listen": "127.0.0.1",
+                "settings": {"address": "127.0.0.1"},
               },
             ],
             "outbounds": [
@@ -302,10 +344,7 @@ class V22RayServer {
                 "streamSettings": {
                   "network": "httpupgrade",
                   "security": "none",
-                  "httpupgradeSettings": {
-                    "path": path,
-                    "host": hosts,
-                  },
+                  "httpupgradeSettings": {"path": path, "host": hosts},
                 },
                 "mux": {"enabled": false, "concurrency": 8},
               },
@@ -324,6 +363,11 @@ class V22RayServer {
               "rules": [
                 {
                   "type": "field",
+                  "inboundTag": ["api"],
+                  "outboundTag": "api",
+                },
+                {
+                  "type": "field",
                   "ip": ["geoip:private"],
                   "outboundTag": "direct",
                 },
@@ -331,9 +375,6 @@ class V22RayServer {
               ],
             },
           };
-
-          // اضافه کردن لاگ برای بررسی کانفیگ نهایی
-          print('HTTP Upgrade config: ${json.encode(httpUpgradeConfig)}');
 
           return json.encode(httpUpgradeConfig);
         }
@@ -350,6 +391,3 @@ class V22RayServer {
     return config;
   }
 }
-
-
-

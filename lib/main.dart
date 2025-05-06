@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:blizzardping/edit_server_screen.dart';
+import 'package:blizzardping/settings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:blizzardping/class/class.dart';
@@ -326,6 +328,8 @@ class _V2RayManagerState extends State<V2RayManager>
   // Add this line
   List<Subscription> _subscriptions = [];
   bool _enableHttpUpgrade = false;
+  bool _isPingingAll =
+      false; // اضافه کردن متغیر جدید برای وضعیت پینگ همه سرورها
 
   void initializeState() {
     // Renamed to 'initializeState'
@@ -843,29 +847,18 @@ class _V2RayManagerState extends State<V2RayManager>
         if (line.isEmpty) continue;
 
         try {
-          // پشتیبانی از Shadowsocks
-          if (line.startsWith('ss://')) {
-            final server = V2RrayServer.fromV2RayURL(line);
+          if (isShadowsocksURL(line)) {
+            final server = _parseShadowsocksURL(line, 'Unnamed Server');
             if (server != null) {
-              print('Successfully parsed SS server: ${server.remark}');
+              print(
+                'Successfully parsed SS server: ${server.remark}',
+              ); // برای دیباگ
               servers.add(server);
             }
-          }
-          // پشتیبانی از VMess
-          else if (line.startsWith('vmess://')) {
+          } else if (line.startsWith('vmess://') ||
+              line.startsWith('vless://')) {
             final server = V2RrayServer.fromV2RayURL(line);
-            if (server != null) {
-              print('Successfully parsed VMess server: ${server.remark}');
-              servers.add(server);
-            }
-          }
-          // پشتیبانی از VLESS
-          else if (line.startsWith('vless://')) {
-            final server = V2RrayServer.fromV2RayURL(line);
-            if (server != null) {
-              print('Successfully parsed VLESS server: ${server.remark}');
-              servers.add(server);
-            }
+            servers.add(server);
           }
         } catch (e) {
           print('Error parsing line: $line');
@@ -874,7 +867,7 @@ class _V2RayManagerState extends State<V2RayManager>
         }
       }
 
-      print('Total parsed servers: ${servers.length}');
+      print('Total parsed servers: ${servers.length}'); // برای دیباگ
       return servers;
     } catch (e) {
       print('Error parsing subscription: $e');
@@ -1094,7 +1087,7 @@ class _V2RayManagerState extends State<V2RayManager>
 
       // If we're connected to V2Ray, use a different approach for ping
       if (_v2rayStatus.value.state == 'CONNECTED') {
-        return await _testConnectedServerDelay(address, port as String);
+        return await _testHTTPPing();
       } else {
         return await _testDirectServerDelay(address, port, timeout);
       }
@@ -1105,86 +1098,40 @@ class _V2RayManagerState extends State<V2RayManager>
     }
   }
 
-  // Test ping when directly connecting to server
+  // Test direct server delay (when not connected to V2Ray)
   Future<int> _testDirectServerDelay(
     String address,
     int port,
     Duration timeout,
   ) async {
     final stopwatch = Stopwatch()..start();
-    bool connectionSuccessful = false;
     Socket? socket;
 
     try {
+      // تلاش برای اتصال به سرور با تایم‌اوت
       socket = await Socket.connect(address, port, timeout: timeout);
-      connectionSuccessful = true;
 
-      // Send a small packet
-      socket.add([0, 1, 2, 3, 4, 5]);
-      await socket.flush();
+      // اگر اتصال موفق بود، سوکت را ببندیم
+      await socket.close();
 
-      // Wait for response
-      await socket.first.timeout(
-        const Duration(seconds: 2),
-        onTimeout: () => Uint8List(0),
-      );
+      stopwatch.stop();
+      final pingValue = stopwatch.elapsedMilliseconds;
+
+      // اگر پینگ خیلی کم است، احتمال scouting مشکلی وجود دارد
+      if (pingValue < 10) return 50; // مقدار واقعی‌تر
+
+      _addLog('Direct ping success: $pingValue ms to $address:$port');
+      return pingValue;
     } catch (e) {
-      _addLog('Direct socket connection error: $e');
-      print('Direct socket connection error: $e');
-      connectionSuccessful = false;
+      _addLog('Direct ping failed: $e');
+      return -1;
     } finally {
+      // اطمینان از بسته شدن سوکت
       socket?.destroy();
     }
-
-    stopwatch.stop();
-    final pingValue = stopwatch.elapsedMilliseconds;
-
-    _addLog(
-      'Direct ping result: $pingValue ms, Success: $connectionSuccessful',
-    );
-    print('Direct ping result: $pingValue ms, Success: $connectionSuccessful');
-
-    if (!connectionSuccessful) return -1;
-    if (pingValue < 10) return 50; // More realistic minimum
-    return pingValue;
   }
 
   // Test ping when already connected through V2Ray
-  Future<int> _testConnectedServerDelay(String address, String port) async {
-    final stopwatch = Stopwatch()..start();
-    bool success = false;
-
-    try {
-      // Try to fetch a small resource from a reliable server
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 3);
-
-      // Use Google's ping service
-      final request = await client.getUrl(
-        Uri.parse('https://www.google.com/generate_204'),
-      );
-      final response = await request.close();
-
-      // Read response
-      await response.drain<void>();
-      success = response.statusCode == 204 || response.statusCode == 200;
-      client.close();
-    } catch (e) {
-      _addLog('HTTP ping test failed: $e');
-      print('HTTP ping test failed: $e');
-      success = false;
-    }
-
-    stopwatch.stop();
-    final pingValue = stopwatch.elapsedMilliseconds;
-
-    _addLog('HTTP ping result: $pingValue ms, Success: $success');
-    print('HTTP ping result: $pingValue ms, Success: $success');
-
-    if (!success) return -1;
-    if (pingValue < 10) return 50; // More realistic minimum
-    return pingValue;
-  }
 
   Future<void> _connect(V2RrayServer server) async {
     try {
@@ -1225,10 +1172,6 @@ class _V2RayManagerState extends State<V2RayManager>
 
         // Parse the config to ensure it's valid JSON
         final configMap = json.decode(configStr);
-
-        // اضافه کردن لاگ برای بررسی کانفیگ
-        _addLog('Using config with HTTP Upgrade: ${_enableHttpUpgrade}');
-        print('Config: ${json.encode(configMap)}');
 
         // Make sure stats and policy are properly configured
         configMap['stats'] = configMap['stats'] ?? {};
@@ -1366,134 +1309,93 @@ class _V2RayManagerState extends State<V2RayManager>
 
   // Test ping using HTTP when connected to V2Ray
   Future<int> _testHTTPPing() async {
-    // اگر HTTP Upgrade فعال است، از روش اختصاصی استفاده کنیم
-    if (_enableHttpUpgrade) {
-      return await _testHTTPUpgradePing();
-    }
-
-    // List of reliable endpoints to try
+    // List of reliable endpoints to try (including IPv6-compatible sites)
     final endpoints = [
       'https://www.google.com/generate_204',
+      'https://ipv6.google.com/generate_204', // IPv6 specific endpoint
       'https://www.cloudflare.com/cdn-cgi/trace',
+      'https://[2606:4700:4700::1111]/cdn-cgi/trace', // Cloudflare IPv6
       'https://www.apple.com/library/test/success.html',
-      'https://www.amazon.com/robots.txt',
-      'https://www.microsoft.com/robots.txt',
-      'https://www.netflix.com/robots.txt',
+      'https://one.one.one.one/cdn-cgi/trace', // Cloudflare DNS
+      'https://[2606:4700:4700::1001]/cdn-cgi/trace', // Cloudflare IPv6 DNS
+      'https://www.example.com',
+      'https://www.wikipedia.org',
     ];
 
     // Shuffle endpoints to avoid pattern detection
     endpoints.shuffle();
 
-    // Try each endpoint with retries
+    final timeout = const Duration(seconds: 3);
+    int successCount = 0;
+    int totalPing = 0;
+
     for (final endpoint in endpoints) {
       try {
+        _addLog('Testing HTTP ping to $endpoint');
+        print('Testing HTTP ping to $endpoint');
+
         final stopwatch = Stopwatch()..start();
+        final client = HttpClient();
 
-        // Create a custom HTTP client with a shorter timeout
-        final client = http.Client();
-        final request = http.Request('GET', Uri.parse(endpoint));
-        request.headers['Connection'] = 'close';
-        request.headers['User-Agent'] =
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
+        // Enable IPv6 connections
+        client.connectionTimeout = timeout;
+        client.autoUncompress = true; // For better compatibility
 
-        final streamedResponse = await client
-            .send(request)
-            .timeout(const Duration(seconds: 10));
+        // Try to resolve using IPv6 first
+        final request = await client
+            .getUrl(Uri.parse(endpoint))
+            .timeout(timeout);
 
-        // Read just a small amount of data to confirm connection
-        await streamedResponse.stream.take(1024).drain();
+        request.headers.set('User-Agent', 'Mozilla/5.0 BlizzardPing App');
+        request.headers.set('Accept', '*/*');
+
+        final response = await request.close().timeout(timeout);
+
+        // Read and discard response data
+        await response.drain<void>().timeout(timeout);
         client.close();
 
-        stopwatch.stop();
-
-        if (streamedResponse.statusCode >= 200 &&
-            streamedResponse.statusCode < 400) {
-          final pingValue = stopwatch.elapsedMilliseconds;
-          _addLog('HTTP ping success: $pingValue ms to $endpoint');
-          print('HTTP ping success: $pingValue ms to $endpoint');
-          return pingValue;
-        }
-      } catch (e) {
-        _addLog('HTTP ping to $endpoint failed: $e');
-        print('HTTP ping to $endpoint failed: $e');
-        // Continue to next endpoint
-      }
-    }
-
-    // All endpoints failed
-    return -1;
-  }
-
-  // Test ping using HTTP when connected to V2Ray with HTTP Upgrade
-  Future<int> _testHTTPUpgradePing() async {
-    // برای کانفیگ‌های HTTP Upgrade، از روش HTTP معمولی استفاده می‌کنیم
-    // اما با تنظیمات خاص برای این نوع اتصال
-
-    // List of reliable endpoints to try
-    final endpoints = [
-      'https://www.google.com',
-      'https://www.cloudflare.com',
-      'https://www.apple.com',
-      'https://www.microsoft.com',
-      'https://www.amazon.com',
-      'https://www.netflix.com',
-    ];
-
-    // Shuffle endpoints to avoid pattern detection
-    endpoints.shuffle();
-
-    // Try each endpoint with retries
-    for (final endpoint in endpoints) {
-      try {
-        final stopwatch = Stopwatch()..start();
-
-        // Create a custom HTTP client with a shorter timeout
-        final client = http.Client();
-
-        // استفاده از متد GET ساده
-        final response = await client
-            .get(
-              Uri.parse(endpoint),
-              headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml',
-                'Cache-Control': 'no-cache',
-              },
-            )
-            .timeout(const Duration(seconds: 5));
-
-        client.close();
         stopwatch.stop();
 
         if (response.statusCode >= 200 && response.statusCode < 400) {
           final pingValue = stopwatch.elapsedMilliseconds;
-          _addLog(
-            'HTTP ping success for HTTP Upgrade: $pingValue ms to $endpoint',
-          );
-          print(
-            'HTTP ping success for HTTP Upgrade: $pingValue ms to $endpoint',
-          );
 
-          // اگر پینگ خیلی کم باشد، یک مقدار معقول برگردانیم
-          if (pingValue < 10) return 50;
-          return pingValue;
+          if (pingValue < 10) {
+            _addLog(
+              'Suspicious ping value: $pingValue ms to $endpoint, ignoring',
+            );
+            continue;
+          }
+
+          _addLog('HTTP ping success: $pingValue ms to $endpoint');
+          print('HTTP ping success: $pingValue ms to $endpoint');
+
+          successCount++;
+          totalPing += pingValue;
+
+          if (successCount >= 2) {
+            int averagePing = totalPing ~/ successCount;
+            _addLog(
+              'Average ping from $successCount successful tests: $averagePing ms',
+            );
+            return averagePing;
+          }
         }
       } catch (e) {
-        _addLog('HTTP ping for HTTP Upgrade to $endpoint failed: $e');
-        print('HTTP ping for HTTP Upgrade to $endpoint failed: $e');
-        // Continue to next endpoint
+        _addLog('HTTP ping to $endpoint failed: $e');
+        print('HTTP ping to $endpoint failed: $e');
       }
     }
 
-    // اگر همه تلاش‌ها شکست خورد، یک مقدار پیش‌فرض برگردانیم
-    _addLog(
-      'All HTTP ping attempts for HTTP Upgrade failed, using default value',
-    );
-    print(
-      'All HTTP ping attempts for HTTP Upgrade failed, using default value',
-    );
-    return 200; // مقدار پیش‌فرض معقول
+    if (successCount > 0) {
+      int averagePing = totalPing ~/ successCount;
+      _addLog(
+        'Average ping from $successCount successful test: $averagePing ms',
+      );
+      return averagePing;
+    }
+
+    return -1;
   }
 
   Future<void> _updatePing(V2RrayServer server) async {
@@ -1521,26 +1423,23 @@ class _V2RayManagerState extends State<V2RayManager>
       );
 
       // Get ping value
-      int delay;
+      int delay = -1; // مقدار پیش‌فرض -1 (خطا)
 
-      // If we're connected to this server, use appropriate ping method
-      if (_currentServer == server.remark &&
-          _v2rayStatus.value.state == 'CONNECTED') {
+      // تلاش چندباره برای گرفتن پینگ
+      for (int attempt = 0; attempt < 3; attempt++) {
+        // استفاده از _testHTTPPing برای همه سرورها
         delay = await _testHTTPPing();
 
-        // اگر HTTP Upgrade فعال است و پینگ موفق نبود، یک مقدار پیش‌فرض استفاده کنیم
-        if (_enableHttpUpgrade && delay == -1) {
-          delay = 200; // مقدار پیش‌فرض معقول
-          _addLog('Using default ping value (200ms) for HTTP Upgrade config');
-          print('Using default ping value (200ms) for HTTP Upgrade config');
+        // اگر پینگ موفق بود، خروج از حلقه
+        if (delay > 0) break;
+
+        // کمی صبر کنیم و دوباره تلاش کنیم
+        if (attempt < 2) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          _addLog(
+            'Retrying ping for ${server.remark} (attempt ${attempt + 2}/3)',
+          );
         }
-      } else {
-        // Otherwise use direct ping
-        delay = await _testDirectServerDelay(
-          server.address,
-          server.port,
-          const Duration(seconds: 3),
-        );
       }
 
       if (mounted) {
@@ -1548,30 +1447,19 @@ class _V2RayManagerState extends State<V2RayManager>
           _pingResults[server.remark] = delay;
           _isPingLoading[server.remark] = false;
         });
+        _addLog('Ping result for ${server.remark}: ${delay}ms');
+        print('Ping result for ${server.remark}: ${delay}ms');
       }
-
-      _addLog('Ping result for ${server.remark}: ${delay}ms');
-      print('Ping result for ${server.remark}: ${delay}ms');
     } catch (e) {
       if (mounted) {
         setState(() {
-          // برای کانفیگ‌های HTTP Upgrade، یک مقدار پیش‌فرض استفاده کنیم
-          if (_enableHttpUpgrade) {
-            _pingResults[server.remark] = 200; // مقدار پیش‌فرض معقول
-            _addLog(
-              'Error in ping, using default value (200ms) for HTTP Upgrade',
-            );
-            print(
-              'Error in ping, using default value (200ms) for HTTP Upgrade',
-            );
-          } else {
-            _pingResults[server.remark] = -1;
-          }
           _isPingLoading[server.remark] = false;
+          // در صورت خطا، مقدار -1 را ذخیره می‌کنیم
+          _pingResults[server.remark] = -1;
         });
       }
-      _addLog('Error updating ping for ${server.remark}: $e');
-      print('Error updating ping for ${server.remark}: $e');
+      _addLog('Error updating ping: $e');
+      print('Error updating ping: $e');
     }
   }
 
@@ -1635,121 +1523,40 @@ class _V2RayManagerState extends State<V2RayManager>
     });
   }
 
-  Future<void> _showSettingsDialog() async {
-    bool tempProxyOnly = _proxyOnly;
-    bool tempEnableIPv6 = _enableIPv6;
-    bool tempEnableMux = _enableMux;
-    bool tempEnableHttpUpgrade = _enableHttpUpgrade;
-    final defaultSubController = TextEditingController(
-      text: _defaultSubscriptionUrl,
+  Future<void> _showSettingsScreen() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) => SettingsScreen(
+              initialProxyOnly: _proxyOnly,
+              initialEnableIPv6: _enableIPv6,
+              initialEnableMux: _enableMux,
+              initialEnableHttpUpgrade: _enableHttpUpgrade,
+              initialDefaultSubscriptionUrl: _defaultSubscriptionUrl,
+            ),
+      ),
     );
 
-    await showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('Settings'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SwitchListTile(
-                      title: const Text('Proxy Only'),
-                      subtitle: const Text('Only redirect proxy traffic'),
-                      value: tempProxyOnly,
-                      onChanged: (value) {
-                        setDialogState(() {
-                          tempProxyOnly = value;
-                        });
-                      },
-                    ),
-                    SwitchListTile(
-                      title: const Text('Enable IPv6'),
-                      subtitle: const Text('Support IPv6 connections'),
-                      value: tempEnableIPv6,
-                      onChanged: (value) {
-                        setDialogState(() {
-                          tempEnableIPv6 = value;
-                        });
-                      },
-                    ),
-                    SwitchListTile(
-                      title: const Text('Enable Mux'),
-                      subtitle: const Text(
-                        'Multiplex connections for better performance',
-                      ),
-                      value: tempEnableMux,
-                      onChanged: (value) {
-                        setDialogState(() {
-                          tempEnableMux = value;
-                        });
-                      },
-                    ),
-                    SwitchListTile(
-                      title: const Text('Enable HTTP Upgrade'),
-                      subtitle: const Text(
-                        'Use HTTP Upgrade for better connectivity',
-                      ),
-                      value: tempEnableHttpUpgrade,
-                      onChanged: (value) {
-                        setDialogState(() {
-                          tempEnableHttpUpgrade = value;
-                        });
-                      },
-                    ),
-                    const Divider(),
-                    const Text('Default Subscription URL:'),
-                    TextField(
-                      controller: defaultSubController,
-                      decoration: const InputDecoration(
-                        hintText: 'Enter default subscription URL',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: () async {
-                    setState(() {
-                      _proxyOnly = tempProxyOnly;
-                      _enableIPv6 = tempEnableIPv6;
-                      _enableMux = tempEnableMux;
-                      _enableHttpUpgrade = tempEnableHttpUpgrade;
-                    });
+    // Handle the result when user returns from settings screen
+    if (result != null && result is Map<String, dynamic>) {
+      setState(() {
+        _proxyOnly = result['proxyOnly'] as bool;
+        _enableIPv6 = result['enableIPv6'] as bool;
+        _enableMux = result['enableMux'] as bool;
+        _enableHttpUpgrade = result['enableHttpUpgrade'] as bool;
+      });
 
-                    await _saveSettings(tempEnableHttpUpgrade);
+      final newDefaultUrl = result['defaultSubscriptionUrl'] as String;
+      if (newDefaultUrl != _defaultSubscriptionUrl) {
+        await _saveDefaultSubscription(newDefaultUrl);
+      }
 
-                    final newDefaultUrl = defaultSubController.text.trim();
-                    if (newDefaultUrl != _defaultSubscriptionUrl) {
-                      await _saveDefaultSubscription(newDefaultUrl);
-                    }
-
-                    if (mounted) {
-                      Navigator.of(context).pop();
-                      SnackBarUtils.showSnackBar(
-                        context,
-                        message: 'Settings saved successfully',
-                      );
-                    }
-                  },
-                  child: const Text('Save'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
+      SnackBarUtils.showSnackBar(
+        context,
+        message: 'Settings saved successfully',
+      );
+    }
   }
 
   // Add this method to delete servers for a specific subscription
@@ -1948,6 +1755,9 @@ class _V2RayManagerState extends State<V2RayManager>
       _isLoading = true;
     });
 
+    // نمایش اسنک بار برای شروع آپدیت دستی
+    SnackBarUtils.showSnackBar(context, message: 'Updating servers...');
+
     try {
       // If we have a subscription URL, fetch servers for that subscription
       if (_subscriptionUrl.isNotEmpty) {
@@ -2017,253 +1827,89 @@ class _V2RayManagerState extends State<V2RayManager>
     );
   }
 
-  void _showConnectionMenu() {
-    final RenderBox button = context.findRenderObject() as RenderBox;
-    final Offset offset = button.localToGlobal(Offset.zero);
-
-    showMenu(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        offset.dx,
-        offset.dy + button.size.height,
-        offset.dx + button.size.width,
-        offset.dy + button.size.height,
-      ),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      color: Theme.of(context).colorScheme.surface,
-      items: [
-        _buildPopupMenuItem(
-          icon: Icons.power_settings_new,
-          title: 'Connect',
-          onTap: _connectToSelectedServer,
-        ),
-        _buildPopupMenuItem(
-          icon: Icons.refresh,
-          title: 'Reconnect',
-          onTap: () => _disconnect().then((_) => _connectToSelectedServer()),
-        ),
-        _buildPopupMenuItem(
-          icon: Icons.info_outline,
-          title: 'Connection Info',
-          onTap: () {
-            Navigator.pop(context);
-            _showConnectionDetails();
-          },
-        ),
-      ],
-    );
-  }
-
-  PopupMenuItem _buildPopupMenuItem({
-    required IconData icon,
-    required String title,
-    required VoidCallback onTap,
-  }) {
-    return PopupMenuItem(
-      child: ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Icon(
-          icon,
-          color: Theme.of(context).colorScheme.primary,
-          size: 22,
-        ),
-        title: Text(
-          title,
-          style: TextStyle(
-            fontSize: 15,
-            color: Theme.of(context).colorScheme.onSurface,
-          ),
-        ),
-        onTap: () {
-          Navigator.pop(context);
-          onTap();
-        },
-      ),
-    );
-  }
-
-  void _showConnectionDetails() {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            backgroundColor: Theme.of(context).colorScheme.surface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            title: Row(
-              children: [
-                Icon(
-                  Icons.info_outline,
-                  color: Theme.of(context).colorScheme.primary,
-                  size: 24,
-                ),
-                const SizedBox(width: 8),
-                const Text('Connection Details'),
-              ],
-            ),
-            content: ValueListenableBuilder<V2RayStatus>(
-              valueListenable: _v2rayStatus,
-              builder: (context, status, _) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildDetailRow(
-                      icon: Icons.radio_button_checked,
-                      label: 'Status',
-                      value: status.state,
-                      color:
-                          status.state == 'CONNECTED'
-                              ? Colors.green
-                              : Colors.grey,
-                    ),
-                    const SizedBox(height: 12),
-                    _buildDetailRow(
-                      icon: Icons.upload,
-                      label: 'Upload',
-                      value: '${_formatSpeed(status.uploadSpeed)}/s',
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(height: 12),
-                    _buildDetailRow(
-                      icon: Icons.download,
-                      label: 'Download',
-                      value: '${_formatSpeed(status.downloadSpeed)}/s',
-                      color: Theme.of(context).colorScheme.secondary,
-                    ),
-                  ],
-                );
-              },
-            ),
-            actions: [
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                child: const Text('Close'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Widget _buildDetailRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(width: 12),
-          Text(
-            label,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            value,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurface,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatSpeed(int bytesPerSecond) {
-    if (bytesPerSecond < 1024) {
-      return '$bytesPerSecond B';
-    } else if (bytesPerSecond < 1024 * 1024) {
-      final kb = (bytesPerSecond / 1024).toStringAsFixed(1);
-      return '$kb KB';
-    } else {
-      final mb = (bytesPerSecond / (1024 * 1024)).toStringAsFixed(1);
-      return '$mb MB';
-    }
-  }
-
   // تابع برای پینگ همه سرورها
   Future<void> _pingAllServers() async {
-    if (_servers.isEmpty) {
-      _showError('No servers available');
-      return;
-    }
+    if (_isPingingAll) return;
 
-    if (mounted) {
-      setState(() {});
-    }
+    setState(() {
+      _isPingingAll = true;
+    });
 
-    _addLog('Starting ping test for all servers');
+    int successCount = 0;
+    int failCount = 0;
 
     try {
       for (final server in _servers) {
         if (!mounted) break;
-
-        // Skip servers with empty addresses
-        if (server.address.isEmpty || server.port == 0) continue;
 
         setState(() {
           _isPingLoading[server.remark] = true;
         });
 
         try {
-          final delay = await _testServerDelay(
-            server.address,
-            server.port,
-            _flutterV2ray,
-            _enableIPv6,
-            timeout: const Duration(seconds: 3),
-          );
+          await _updatePing(server);
 
-          if (mounted) {
-            setState(() {
-              _pingResults[server.remark] = delay;
-              _isPingLoading[server.remark] = false;
-            });
+          if (!mounted) break;
+
+          if (_pingResults[server.remark] != null &&
+              _pingResults[server.remark]! > 0) {
+            successCount++;
+          } else {
+            failCount++;
           }
         } catch (e) {
-          if (mounted) {
-            setState(() {
-              _isPingLoading[server.remark] = false;
-            });
-          }
-          _addLog('Error pinging ${server.remark}: $e');
+          if (!mounted) break;
+
+          setState(() {
+            _pingResults[server.remark] = -1;
+            _isPingLoading[server.remark] = false;
+          });
+
+          failCount++;
         }
 
-        // Small delay between pings to avoid overwhelming the network
         await Future.delayed(const Duration(milliseconds: 100));
+      }
+
+      // مرتب‌سازی سرورها بر اساس پینگ بعد از اتمام پینگ همه سرورها
+      if (mounted) {
+        _sortServersByPing();
       }
     } finally {
       if (mounted) {
-        setState(() {});
+        setState(() {
+          _isPingingAll = false;
+        });
+
+        // نمایش نتیجه پینگ در SnackBar
+        SnackBarUtils.showSnackBar(
+          context,
+          message:
+              'Ping completed: $successCount successful, $failCount failed',
+          icon: Icons.speed,
+        );
       }
     }
+  }
 
-    _addLog('Completed ping test for all servers');
+  // تابع جدید برای مرتب‌سازی سرورها بر اساس پینگ
+  void _sortServersByPing() {
+    setState(() {
+      _servers.sort((a, b) {
+        final pingA = _pingResults[a.remark] ?? -1;
+        final pingB = _pingResults[b.remark] ?? -1;
 
-    // حذف نمایش snackbar برای پینگ
-    // SnackBarUtils.showSnackBar(
-    //   context,
-    //   message: 'Ping test completed for all servers',
-    // );
+        // سرورهای با پینگ موفق (مقدار مثبت) در اولویت هستند
+        if (pingA > 0 && pingB <= 0) return -1;
+        if (pingA <= 0 && pingB > 0) return 1;
+
+        // هر دو پینگ موفق هستند، مرتب‌سازی از کمترین به بیشترین
+        if (pingA > 0 && pingB > 0) return pingA.compareTo(pingB);
+
+        // هر دو پینگ ناموفق هستند، ترتیب فعلی حفظ شود
+        return 0;
+      });
+    });
   }
 
   // تابع برای شروع پینگ دوره‌ای
@@ -2306,14 +1952,6 @@ class _V2RayManagerState extends State<V2RayManager>
     });
 
     _addLog('Started periodic ping updates every 3 seconds');
-  }
-
-  Future<void> _saveSettings([bool? tempEnableHttpUpgrade]) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('proxy_only', _proxyOnly);
-    await prefs.setBool('enable_ipv6', _enableIPv6);
-    await prefs.setBool('enable_mux', _enableMux);
-    await prefs.setBool('enable_http_upgrade', _enableHttpUpgrade);
   }
 
   Future<void> _loadSettings() async {
@@ -2376,154 +2014,44 @@ class _V2RayManagerState extends State<V2RayManager>
             child: AppBar(
               elevation: 0,
               centerTitle: true,
-
-              leading: ValueListenableBuilder<V2RayStatus>(
-                valueListenable: _v2rayStatus,
-                builder: (context, status, _) {
-                  final isConnected = status.state == 'CONNECTED';
-                  final isDark =
-                      Theme.of(context).brightness == Brightness.dark;
-                  final colorScheme = Theme.of(context).colorScheme;
-
-                  return Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: () {
-                          HapticFeedback.lightImpact();
-                          if (isConnected) {
-                            _showDisconnectConfirmation();
-                          } else {
-                            _showConnectionMenu();
-                          }
-                        },
-                        onLongPress: () {
-                          HapticFeedback.mediumImpact();
-                          _showConnectionDetails();
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 300),
-                          decoration: BoxDecoration(
-                            color:
-                                isConnected
-                                    ? (isDark
-                                        ? colorScheme.primary.withOpacity(0.15)
-                                        : colorScheme.primary.withOpacity(0.1))
-                                    : (isDark
-                                        ? Colors.grey[900]?.withOpacity(0.2)
-                                        : Colors.grey[100]),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color:
-                                  isConnected
-                                      ? (isDark
-                                          ? colorScheme.primary.withOpacity(0.5)
-                                          : colorScheme.primary.withOpacity(
-                                            0.3,
-                                          ))
-                                      : Colors.transparent,
-                              width: 1.5,
-                            ),
-                            boxShadow:
-                                isConnected
-                                    ? [
-                                      BoxShadow(
-                                        color: colorScheme.primary.withOpacity(
-                                          0.2,
-                                        ),
-                                        blurRadius: 8,
-                                        spreadRadius: 0,
-                                      ),
-                                    ]
-                                    : null,
-                          ),
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 300),
-                                transitionBuilder: (
-                                  Widget child,
-                                  Animation<double> animation,
-                                ) {
-                                  return ScaleTransition(
-                                    scale: animation,
-                                    child: FadeTransition(
-                                      opacity: animation,
-                                      child: child,
-                                    ),
-                                  );
-                                },
-                                child: Icon(
-                                  isConnected
-                                      ? Icons.wifi
-                                      : Icons.wifi_off_rounded,
-                                  key: ValueKey(isConnected),
-                                  color:
-                                      isConnected
-                                          ? colorScheme.primary
-                                          : (isDark
-                                              ? Colors.grey[400]
-                                              : Colors.grey[600]),
-                                  size: 22,
-                                ),
-                              ),
-                              if (isConnected)
-                                Positioned(
-                                  right: 2,
-                                  bottom: 2,
-                                  child: TweenAnimationBuilder<double>(
-                                    tween: Tween(begin: 0.0, end: 1.0),
-                                    duration: const Duration(milliseconds: 500),
-                                    builder: (context, value, child) {
-                                      return Transform.scale(
-                                        scale: value,
-                                        child: child,
-                                      );
-                                    },
-                                    child: Container(
-                                      width: 8,
-                                      height: 8,
-                                      decoration: BoxDecoration(
-                                        color: colorScheme.primary,
-                                        shape: BoxShape.circle,
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: colorScheme.primary
-                                                .withOpacity(0.4),
-                                            blurRadius: 4,
-                                            spreadRadius: 0,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
+              title: const Text('Blizzard Ping'),
+              // دکمه پینگ به سمت چپ منتقل شد
+              leading:
+                  _isPingingAll
+                      ? Container(
+                        width: 48,
+                        height: 48,
+                        padding: const EdgeInsets.all(12),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Theme.of(context).colorScheme.primary,
                           ),
                         ),
+                      )
+                      : IconButton(
+                        icon: const Icon(Icons.speed),
+                        tooltip: 'Ping All Servers',
+                        onPressed: _pingAllServers,
                       ),
-                    ),
-                  );
-                },
-              ),
               actions: [
-                IconButton(
-                  icon: const Icon(Icons.speed),
-                  tooltip: 'Ping All Servers',
-                  onPressed: _pingAllServers,
+                // فقط دکمه منو باقی ماند
+                Builder(
+                  builder:
+                      (context) => IconButton(
+                        icon: const Icon(Icons.menu),
+                        tooltip: 'Open Menu',
+                        onPressed: () {
+                          Scaffold.of(context).openEndDrawer();
+                        },
+                      ),
                 ),
-                _buildUpdateSubscriptionButton(),
-                _buildFreeConfigButton(),
-                _buildClipboardButton(),
-                _buildMoreActionsButton(),
               ],
             ),
           ),
         ),
       ),
+      endDrawer: _buildDrawer(),
       body: Column(
         children: [
           // Subscription List
@@ -2698,30 +2226,63 @@ class _V2RayManagerState extends State<V2RayManager>
                         ],
                       ),
                     )
-                    : RefreshIndicator(
-                      onRefresh: refreshServers,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.only(bottom: 80),
-                        itemCount: _servers.length,
-                        itemBuilder: (context, index) {
-                          final server = _servers[index];
-                          return ServerCard(
+                    : ReorderableListView.builder(
+                      itemCount: _servers.length,
+                      onReorder: (oldIndex, newIndex) {
+                        setState(() {
+                          if (oldIndex < newIndex) {
+                            newIndex -= 1;
+                          }
+                          final item = _servers.removeAt(oldIndex);
+                          _servers.insert(newIndex, item);
+                        });
+                        // ذخیره ترتیب جدید سرورها
+                        _saveServers(_servers);
+                      },
+                      itemBuilder: (context, index) {
+                        final server = _servers[index];
+                        return Dismissible(
+                          key: Key(server.remark),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 20),
+                            color: Colors.red,
+                            child: const Icon(
+                              Icons.delete,
+                              color: Colors.white,
+                            ),
+                          ),
+                          onDismissed: (direction) {
+                            _deleteServer(server);
+                            // استفاده از اسنک‌بار شخصی‌سازی شده با قابلیت بازگرداندن
+                            SnackBarUtils.showSnackBar(
+                              context,
+                              message: '${server.remark} deleted',
+                              actionLabel: 'UNDO',
+                              onActionPressed: () {
+                                setState(() {
+                                  _servers.insert(index, server);
+                                });
+                                _saveServers(_servers);
+                              },
+                              icon: Icons.delete_outline,
+                            );
+                          },
+                          child: ServerCard(
                             server: server,
                             currentServer: _currentServer,
-
                             pingResults: _pingResults,
                             isPingLoading: _isPingLoading,
                             isLoading: _isLoading,
                             onSelect:
                                 (server) => _handleServerChange(server.remark),
-                            onDelete: () => _deleteServer(server),
                             onEdit: () => _editServer(server),
                             onConnect: _connect,
                             v2rayStatus: _v2rayStatus,
-                            // onPing: _pingServer, // این خط را حذف یا کامنت می‌کنیم
-                          );
-                        },
-                      ),
+                          ),
+                        );
+                      },
                     ),
           ),
         ],
@@ -3036,18 +2597,24 @@ class _V2RayManagerState extends State<V2RayManager>
 
     return Expanded(
       child: Column(
-        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 16, color: color),
+              Icon(
+                label == 'Ping' && value == 'Failed'
+                    ? Icons.error_outline
+                    : icon,
+                size: 16,
+                color: color,
+              ),
               const SizedBox(width: 4),
               Text(
                 label,
                 style: TextStyle(
                   fontSize: 12,
-                  color: isDark ? Colors.grey[400] : Colors.grey[600],
+                  color: isDark ? Colors.grey[400] : Colors.grey[700],
                 ),
               ),
             ],
@@ -3061,6 +2628,8 @@ class _V2RayManagerState extends State<V2RayManager>
               color: color,
             ),
           ),
+
+          // نمایش نوار پیشرفت برای پینگ
           if ((label == 'Ping' && value != 'N/A' && value != 'Failed') ||
               showProgressBar) ...[
             const SizedBox(height: 4),
@@ -3080,7 +2649,8 @@ class _V2RayManagerState extends State<V2RayManager>
   }
 
   Color _getPingColor(int ping) {
-    if (ping < 0) return Colors.grey; // Failed ping
+    if (ping < 0) return Colors.red; // Failed ping with red color
+    if (ping == 0) return Colors.grey; // No ping data with grey color
     if (ping < 800) return Colors.green;
     if (ping < 900) return Colors.greenAccent;
     if (ping < 1000) return Colors.lime;
@@ -3097,125 +2667,168 @@ class _V2RayManagerState extends State<V2RayManager>
 
   // اضافه کردن متد جدید برای پردازش کلیپ‌برد
 
-  Widget _buildUpdateSubscriptionButton() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      child: IconButton(
-        icon: const Icon(Icons.refresh_rounded),
-        onPressed: () {
-          HapticFeedback.lightImpact();
-          refreshServers();
-        },
-        tooltip: 'Update Subscription',
-      ),
-    );
-  }
-
-  Widget _buildFreeConfigButton() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () {
-            HapticFeedback.lightImpact();
-            _showFreeConfigDialog();
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: isDark ? Colors.blue[300]! : Colors.blue[700]!,
-                width: 1.5,
+  Widget _buildDrawer() {
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          children: [
+            DrawerHeader(
+              decoration: BoxDecoration(
+                color:
+                    Theme.of(context).brightness == Brightness.dark
+                        ? Colors.blue.shade900.withOpacity(0.2)
+                        : Colors.blue.shade50,
               ),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.download_rounded,
-                  size: 16,
-                  color: isDark ? Colors.blue[300] : Colors.blue[700],
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  'Free',
-                  style: TextStyle(
-                    color: isDark ? Colors.blue[300] : Colors.blue[700],
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 70,
+                    height: 70,
+                    decoration: BoxDecoration(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.primary.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.cloud_outlined,
+                      size: 40,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Blizzard Ping',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  FutureBuilder<PackageInfo>(
+                    future: PackageInfo.fromPlatform(),
+                    builder: (context, snapshot) {
+                      return Text(
+                        'Version: ${snapshot.data?.version ?? ''}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).textTheme.bodySmall?.color,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMoreActionsButton() {
-    return FutureBuilder<PackageInfo>(
-      future: PackageInfo.fromPlatform(),
-      builder: (context, snapshot) {
-        return PopupMenuButton(
-          icon: const Icon(Icons.more_vert),
-          itemBuilder:
-              (context) => [
-                _buildPopupMenuItem(
-                  icon: Icons.refresh_rounded,
-                  title: 'Refresh Servers',
-                  onTap: refreshServers,
-                ),
-                _buildPopupMenuItem(
-                  icon: Icons.playlist_add_rounded,
-                  title: 'Subscription Manager',
-                  onTap: _openSubscriptionManager,
-                ),
-                _buildPopupMenuItem(
-                  icon: Icons.settings_rounded,
-                  title: 'Settings',
-                  onTap: () => _showSettingsDialog(),
-                ),
-                _buildPopupMenuItem(
-                  icon: Icons.system_update_rounded,
-                  title: 'Check for Updates',
-                  onTap: () => UpdateChecker.checkForUpdate(context),
-                ),
-                _buildPopupMenuItem(
-                  icon:
-                      Theme.of(context).brightness == Brightness.dark
-                          ? Icons.light_mode
-                          : Icons.dark_mode,
-                  title:
-                      Theme.of(context).brightness == Brightness.dark
-                          ? 'Light Theme'
-                          : 'Dark Theme',
-                  onTap: () {
-                    // Toggle theme using MyApp's method
-                    final myAppState = MyApp.of(context);
-                    if (myAppState != null) {
-                      myAppState.toggleTheme();
-                    }
-                  },
-                ),
-                PopupMenuItem(
-                  enabled: false,
-                  child: Text(
-                    'Version: ${snapshot.data?.version ?? ''}',
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  _buildDrawerItem(
+                    icon: Icons.refresh_rounded,
+                    title: 'Update Subscription',
+                    onTap: () {
+                      Navigator.pop(context);
+                      refreshServers();
+                    },
+                  ),
+                  _buildDrawerItem(
+                    icon: Icons.playlist_add_rounded,
+                    title: 'Subscription Manager',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openSubscriptionManager();
+                    },
+                  ),
+                  _buildDrawerItem(
+                    icon: Icons.settings_rounded,
+                    title: 'Settings',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showSettingsScreen();
+                    },
+                  ),
+                  _buildDrawerItem(
+                    icon: Icons.system_update_rounded,
+                    title: 'Check for Updates',
+                    onTap: () {
+                      Navigator.pop(context);
+                      UpdateChecker.checkForUpdate(context);
+                    },
+                  ),
+                  _buildDrawerItem(
+                    icon:
+                        Theme.of(context).brightness == Brightness.dark
+                            ? Icons.light_mode
+                            : Icons.dark_mode,
+                    title:
+                        Theme.of(context).brightness == Brightness.dark
+                            ? 'Light Theme'
+                            : 'Dark Theme',
+                    onTap: () {
+                      Navigator.pop(context);
+                      // Toggle theme using MyApp's method
+                      final myAppState = MyApp.of(context);
+                      if (myAppState != null) {
+                        myAppState.toggleTheme();
+                      }
+                    },
+                  ),
+                  const Divider(),
+                  _buildDrawerItem(
+                    icon: Icons.add_link_rounded,
+                    title: 'Free Subscription',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showFreeConfigDialog();
+                    },
+                  ),
+                  _buildDrawerItem(
+                    icon: Icons.content_paste_rounded,
+                    title: 'Import from Clipboard',
+                    onTap: () {
+                      Navigator.pop(context);
+                      // Call the clipboard button functionality
+                      _buildClipboardButton();
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '© 2025 Blizzard Ping',
                     style: TextStyle(
                       fontSize: 12,
                       color: Theme.of(context).textTheme.bodySmall?.color,
                     ),
                   ),
-                ),
-              ],
-        );
-      },
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDrawerItem({
+    required IconData icon,
+    required String title,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Icon(
+        icon,
+        color: Theme.of(context).colorScheme.primary,
+        size: 22,
+      ),
+      title: Text(title, style: const TextStyle(fontSize: 15)),
+      onTap: onTap,
+      dense: true,
+      visualDensity: const VisualDensity(horizontal: -1, vertical: -1),
     );
   }
 
@@ -3352,363 +2965,27 @@ class _V2RayManagerState extends State<V2RayManager>
   }
 
   void _editServer(V2RrayServer server) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final colors = Theme.of(context).colorScheme;
-
-    final configController = TextEditingController(text: server.config);
-    final remarkController = TextEditingController(text: server.remark);
-    final addressController = TextEditingController(text: server.address);
-    final portController = TextEditingController(text: server.port.toString());
-
-    showDialog(
-      context: context,
-      builder:
-          (context) => Dialog(
-            backgroundColor: Colors.transparent,
-            child: Container(
-              width: MediaQuery.of(context).size.width * 0.9,
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.85,
-              ),
-              decoration: BoxDecoration(
-                color: isDark ? Colors.grey[900] : Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 10,
-                    offset: const Offset(0, 5),
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Header
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: colors.primary,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(12),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: colors.onPrimary.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Icon(
-                            Icons.edit_rounded,
-                            color: colors.onPrimary,
-                            size: 20,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          'ویرایش سرور',
-                          style: TextStyle(
-                            color: colors.onPrimary,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  Flexible(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Basic Settings Section
-                          _buildSectionHeader(
-                            title: 'تنظیمات اصلی',
-                            icon: Icons.settings_rounded,
-                            colors: colors,
-                          ),
-                          const SizedBox(height: 16),
-
-                          // Remark Field
-                          _buildInputField(
-                            controller: remarkController,
-                            label: 'نام سرور',
-                            icon: Icons.label_rounded,
-                            colors: colors,
-                          ),
-                          const SizedBox(height: 16),
-
-                          // Address Field
-                          _buildInputField(
-                            controller: addressController,
-                            label: 'آدرس سرور',
-                            icon: Icons.dns_rounded,
-                            colors: colors,
-                          ),
-                          const SizedBox(height: 16),
-
-                          // Port Field
-                          _buildInputField(
-                            controller: portController,
-                            label: 'پورت',
-                            icon: Icons.numbers_rounded,
-                            keyboardType: TextInputType.number,
-                            colors: colors,
-                          ),
-                          const SizedBox(height: 24),
-
-                          // Advanced Settings Section
-                          _buildSectionHeader(
-                            title: 'تنظیمات پیشرفته',
-                            icon: Icons.code_rounded,
-                            colors: colors,
-                            trailing: TextButton.icon(
-                              onPressed:
-                                  () => _showJsonEditorDialog(
-                                    configController,
-                                    colors,
-                                  ),
-                              icon: const Icon(
-                                Icons.edit_note_rounded,
-                                size: 18,
-                              ),
-                              label: const Text('ویرایش'),
-                              style: TextButton.styleFrom(
-                                foregroundColor: colors.primary,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 8,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-
-                          // Config Preview
-                          Container(
-                            decoration: BoxDecoration(
-                              color:
-                                  isDark
-                                      ? Colors.black.withOpacity(0.3)
-                                      : colors.primary.withOpacity(0.05),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: colors.outline.withOpacity(0.1),
-                              ),
-                            ),
-                            child: TextField(
-                              controller: configController,
-                              maxLines: 6,
-                              readOnly: true,
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                                color: colors.onSurface.withOpacity(0.8),
-                              ),
-                              decoration: InputDecoration(
-                                border: InputBorder.none,
-                                contentPadding: const EdgeInsets.all(12),
-                                hintText: 'کانفیگ JSON',
-                                hintStyle: TextStyle(
-                                  color: colors.onSurface.withOpacity(0.5),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // Action Buttons
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: isDark ? Colors.black12 : colors.surface,
-                      border: Border(
-                        top: BorderSide(color: colors.outline.withOpacity(0.1)),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          style: TextButton.styleFrom(
-                            foregroundColor: colors.primary,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 12,
-                            ),
-                          ),
-                          child: const Text('انصراف'),
-                        ),
-                        const SizedBox(width: 12),
-                        FilledButton.icon(
-                          onPressed:
-                              () => _saveV2rayServerChanges(
-                                context,
-                                server,
-                                remarkController.text,
-                                addressController.text,
-                                portController.text,
-                                configController.text,
-                              ),
-                          icon: const Icon(Icons.save_rounded, size: 18),
-                          label: const Text('ذخیره تغییرات'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: colors.primary,
-                            foregroundColor: colors.onPrimary,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 12,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) => EditServerScreen(
+              server: server,
+              onSave: (updatedServer) async {
+                setState(() {
+                  final index = _servers.indexOf(server);
+                  if (index != -1) {
+                    _servers[index] = updatedServer;
+                  }
+                });
+                await _saveServers(_servers);
+                SnackBarUtils.showSnackBar(
+                  context,
+                  message: 'Server configuration saved successfully',
+                  isError: false,
+                );
+              },
             ),
-          ),
-    );
-  }
-
-  Widget _buildSectionHeader({
-    required String title,
-    required IconData icon,
-    required ColorScheme colors,
-    Widget? trailing,
-  }) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Row(
-          children: [
-            Icon(icon, size: 20, color: colors.primary),
-            const SizedBox(width: 8),
-            Text(
-              title,
-              style: TextStyle(
-                color: colors.primary,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        if (trailing != null) trailing,
-      ],
-    );
-  }
-
-  Widget _buildInputField({
-    required TextEditingController controller,
-    required String label,
-    required IconData icon,
-    required ColorScheme colors,
-    TextInputType? keyboardType,
-  }) {
-    return TextField(
-      controller: controller,
-      keyboardType: keyboardType,
-      style: TextStyle(fontSize: 14, color: colors.onSurface),
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, size: 20),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: colors.outline.withOpacity(0.2)),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: colors.outline.withOpacity(0.2)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: colors.primary),
-        ),
-        filled: true,
-        fillColor: colors.surfaceVariant.withOpacity(0.1),
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
-        floatingLabelBehavior: FloatingLabelBehavior.always,
-      ),
-    );
-  }
-
-  Future<void> _saveV2rayServerChanges(
-    BuildContext context,
-    V2RrayServer originalServer,
-    String remark,
-    String address,
-    String portStr,
-    String config,
-  ) async {
-    try {
-      // Validate JSON config
-      json.decode(config);
-
-      // Validate port
-      final port = int.tryParse(portStr);
-      if (port == null || port < 1 || port > 65535) {
-        throw Exception('Port must be between 1 and 65535');
-      }
-
-      // Validate other fields
-      if (remark.trim().isEmpty) {
-        throw Exception('Server name cannot be empty');
-      }
-      if (address.trim().isEmpty) {
-        throw Exception('Server address cannot be empty');
-      }
-
-      final updatedServer = V2RrayServer(
-        remark: remark.trim(),
-        address: address.trim(),
-        port: port,
-        config: config.trim(),
-      );
-
-      setState(() {
-        final index = _servers.indexOf(originalServer);
-        if (index != -1) {
-          _servers[index] = updatedServer;
-        }
-      });
-
-      await _saveServers(_servers);
-      Navigator.pop(context);
-
-      SnackBarUtils.showSnackBar(
-        context,
-        message: 'Server configuration saved successfully',
-        isError: false,
-      );
-    } catch (e) {
-      SnackBarUtils.showSnackBar(
-        context,
-        message: 'Error: ${e.toString()}',
-        isError: true,
-      );
-    }
-  }
-
-  void _showV2raySnackBar(String message, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError ? Colors.red : Colors.green,
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
       ),
     );
   }
@@ -3884,138 +3161,6 @@ class _V2RayManagerState extends State<V2RayManager>
   Future<void> _saveLastSelectedServer(String serverRemark) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('last_selected_server', serverRemark);
-  }
-
-  void _showJsonEditorDialog(
-    TextEditingController configController,
-    ColorScheme colors,
-  ) {
-    showDialog(
-      context: context,
-      builder:
-          (context) => Dialog(
-            backgroundColor: Colors.transparent,
-            child: Container(
-              width: MediaQuery.of(context).size.width * 0.9,
-              height: MediaQuery.of(context).size.height * 0.8,
-              decoration: BoxDecoration(
-                color: Theme.of(context).dialogBackgroundColor,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  // Header
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colors.primary,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(8),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(Icons.code, color: colors.onPrimary, size: 20),
-                            const SizedBox(width: 8),
-                            Text(
-                              'ویرایش کانفیگ',
-                              style: TextStyle(
-                                color: colors.onPrimary,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        IconButton(
-                          icon: Icon(
-                            Icons.format_align_left,
-                            color: colors.onPrimary,
-                          ),
-                          onPressed: () {
-                            try {
-                              final jsonObj = json.decode(
-                                configController.text,
-                              );
-                              final prettyJson = const JsonEncoder.withIndent(
-                                '  ',
-                              ).convert(jsonObj);
-                              configController.text = prettyJson;
-                            } catch (e) {
-                              _showV2raySnackBar(
-                                'فرمت JSON نامعتبر است',
-                                isError: true,
-                              );
-                            }
-                          },
-                          tooltip: 'فرمت‌بندی JSON',
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Editor
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      child: TextField(
-                        controller: configController,
-                        maxLines: null,
-                        expands: true,
-                        style: TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 14,
-                          color: colors.onSurface,
-                        ),
-                        decoration: InputDecoration(
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(4),
-                            borderSide: BorderSide(
-                              color: colors.outline.withOpacity(0.2),
-                            ),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(4),
-                            borderSide: BorderSide(
-                              color: colors.outline.withOpacity(0.2),
-                            ),
-                          ),
-                          contentPadding: const EdgeInsets.all(16),
-                        ),
-                      ),
-                    ),
-                  ),
-                  // Buttons
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      border: Border(
-                        top: BorderSide(color: colors.outline.withOpacity(0.2)),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          style: TextButton.styleFrom(
-                            foregroundColor: colors.primary,
-                          ),
-                          child: const Text('بستن'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-    );
   }
 }
 
